@@ -44,6 +44,11 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
@@ -199,6 +204,27 @@ a {
   justify-content: flex-end;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.status-strip {
+  margin: -4px 0 16px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border: 1px solid var(--stroke);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #4b5260;
+  font-weight: 750;
 }
 
 .searchbox {
@@ -500,6 +526,11 @@ a {
   transition: transform 180ms ease, background 180ms ease;
 }
 
+.account-row,
+.transaction-row {
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+}
+
 .account-row:hover,
 .transaction-row:hover,
 .due-row:hover,
@@ -621,6 +652,13 @@ a {
   margin: 14px 0;
 }
 
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .card-metrics div {
   min-width: 0;
   border-radius: 16px;
@@ -632,6 +670,13 @@ a {
   display: block;
   margin-top: 5px;
   overflow-wrap: anywhere;
+}
+
+.card-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .meter {
@@ -677,10 +722,6 @@ a {
 .transaction-list {
   display: grid;
   gap: 8px;
-}
-
-.transaction-row {
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
 }
 
 .txn-icon.expense {
@@ -938,6 +979,57 @@ textarea {
   display: none;
 }
 
+.auth-shell,
+.loading-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.loading-shell {
+  gap: 12px;
+  color: #4b5260;
+  font-weight: 800;
+}
+
+.loading-shell svg {
+  animation: spin 900ms linear infinite;
+}
+
+.auth-panel {
+  width: min(520px, 100%);
+  border: 1px solid var(--stroke);
+  border-radius: 30px;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 22px;
+}
+
+.auth-brand {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--stroke);
+}
+
+.auth-panel h1 {
+  margin: 0;
+  font-size: 42px;
+  line-height: 1;
+}
+
+.auth-form {
+  grid-template-columns: 1fr;
+}
+
+.form-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--red);
+  font-weight: 800;
+}
+
 .animate-fade {
   animation: fadein 360ms ease both;
 }
@@ -993,6 +1085,12 @@ textarea {
   50% {
     transform: scaleY(1);
     opacity: 1;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -1073,8 +1171,19 @@ textarea {
     grid-template-columns: 1fr auto;
   }
 
-  .top-actions .primary-button {
+  .top-actions .primary-button,
+  .top-actions .secondary-button {
     grid-column: 1 / -1;
+  }
+
+  .panel-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .panel-actions .primary-button,
+  .panel-actions .secondary-button {
+    flex: 1 1 150px;
   }
 
   .hero-panel {

@@ -15,7 +15,11 @@ import {
   Landmark,
   LayoutDashboard,
   LineChart,
+  Link as LinkIcon,
+  LogIn,
+  LogOut,
   ListPlus,
+  Pencil,
   PieChart,
   Plus,
   Receipt,
@@ -31,10 +35,12 @@ import {
   X,
 } from "lucide-react";
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { usePlaidLink } from "react-plaid-link";
 
 type AccountType = "Checking" | "Savings" | "Money Market" | "Cash" | "Investment";
 type TransactionType = "expense" | "income" | "card-payment";
 type SourceKind = "account" | "card";
+type ViewId = "dashboard" | "accounts" | "cards" | "transactions" | "budgets" | "rewards";
 
 type Bank = {
   id: string;
@@ -64,16 +70,22 @@ type CardTemplate = {
 
 type Account = {
   id: string;
+  source?: "manual" | "plaid";
+  providerAccountId?: string;
   name: string;
   bankId: string;
   type: AccountType;
   last4: string;
   openingBalance: number;
+  currentBalance?: number;
+  availableBalance?: number | null;
   color: string;
 };
 
 type UserCard = {
   id: string;
+  source?: "manual" | "plaid";
+  providerAccountId?: string;
   nickname: string;
   templateId: string;
   issuerId: string;
@@ -81,6 +93,8 @@ type UserCard = {
   last4: string;
   creditLimit: number;
   startingDebt: number;
+  currentDebt?: number;
+  availableCredit?: number | null;
   apr: number;
   minimumPayment: number;
   dueDay: number;
@@ -101,6 +115,7 @@ type Transaction = {
   paymentAccountId?: string;
   cashback: number;
   notes?: string;
+  providerTransactionId?: string;
 };
 
 type Budget = {
@@ -109,12 +124,30 @@ type Budget = {
   monthlyLimit: number;
 };
 
+type User = {
+  id: string;
+  email: string;
+  name?: string;
+};
+
+type PlaidStatus = {
+  configured: boolean;
+  environment: string;
+};
+
 type AppData = {
   accounts: Account[];
   cards: UserCard[];
   transactions: Transaction[];
   budgets: Budget[];
 };
+
+type ModalState =
+  | { type: "account"; item?: Account }
+  | { type: "card"; item?: UserCard }
+  | { type: "transaction"; item?: Transaction }
+  | { type: "budget"; item?: Budget }
+  | null;
 
 const BANKS: Bank[] = [
   { id: "chase", name: "Chase", shortName: "Chase", tone: "#0b66c3" },
@@ -318,117 +351,50 @@ const CARD_CATALOG: CardTemplate[] = [
 ];
 
 const DEFAULT_DATA: AppData = {
-  accounts: [
-    {
-      id: "acct-main",
-      name: "Everyday Checking",
-      bankId: "chase",
-      type: "Checking",
-      last4: "4182",
-      openingBalance: 4800,
-      color: "#0b66c3",
-    },
-    {
-      id: "acct-save",
-      name: "Emergency Savings",
-      bankId: "ally",
-      type: "Savings",
-      last4: "9204",
-      openingBalance: 12600,
-      color: "#682d8f",
-    },
-  ],
-  cards: [
-    {
-      id: "card-flex",
-      nickname: "Freedom Flex",
-      templateId: "chase-freedom-flex",
-      issuerId: "chase",
-      network: "Mastercard",
-      last4: "1198",
-      creditLimit: 9500,
-      startingDebt: 1220.43,
-      apr: 24.99,
-      minimumPayment: 40,
-      dueDay: 18,
-      statementDay: 23,
-      accent: "#113f8f",
-      rewards: CARD_CATALOG[1].rewards,
-    },
-    {
-      id: "card-active",
-      nickname: "Active Cash",
-      templateId: "wells-fargo-active-cash",
-      issuerId: "wells-fargo",
-      network: "Visa",
-      last4: "3081",
-      creditLimit: 7000,
-      startingDebt: 389.11,
-      apr: 21.49,
-      minimumPayment: 35,
-      dueDay: 6,
-      statementDay: 11,
-      accent: "#b31b1b",
-      rewards: CARD_CATALOG[3].rewards,
-    },
-  ],
-  transactions: [
-    {
-      id: "txn-1",
-      type: "expense",
-      date: "2026-07-01",
-      merchant: "Trader Joe's",
-      category: "Groceries",
-      amount: 86.44,
-      sourceKind: "card",
-      sourceId: "card-active",
-      cashback: 1.73,
-      notes: "Weekly groceries",
-    },
-    {
-      id: "txn-2",
-      type: "expense",
-      date: "2026-07-02",
-      merchant: "Shell",
-      category: "Gas",
-      amount: 52.18,
-      sourceKind: "card",
-      sourceId: "card-flex",
-      cashback: 2.61,
-    },
-    {
-      id: "txn-3",
-      type: "income",
-      date: "2026-07-01",
-      merchant: "Payroll",
-      category: "Income",
-      amount: 2850,
-      sourceKind: "account",
-      sourceId: "acct-main",
-      cashback: 0,
-    },
-    {
-      id: "txn-4",
-      type: "expense",
-      date: "2026-06-28",
-      merchant: "Spotify",
-      category: "Subscriptions",
-      amount: 11.99,
-      sourceKind: "card",
-      sourceId: "card-active",
-      cashback: 0.24,
-    },
-  ],
-  budgets: [
-    { id: "budget-food", category: "Groceries", monthlyLimit: 520 },
-    { id: "budget-dining", category: "Restaurants", monthlyLimit: 260 },
-    { id: "budget-gas", category: "Gas", monthlyLimit: 220 },
-    { id: "budget-shopping", category: "Shopping", monthlyLimit: 300 },
-  ],
+  accounts: [],
+  cards: [],
+  transactions: [],
+  budgets: [],
 };
 
 const STORAGE_KEY = "money-manager-v1";
 const todayIso = new Date().toISOString().slice(0, 10);
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+const VIEW_PATHS: Record<ViewId, string> = {
+  dashboard: "/",
+  accounts: "/accounts",
+  cards: "/cards",
+  transactions: "/transactions",
+  budgets: "/budgets",
+  rewards: "/rewards",
+};
+
+function viewFromPath(pathname: string): ViewId {
+  const match = (Object.entries(VIEW_PATHS) as [ViewId, string][]).find(([, path]) => path === pathname);
+  return match?.[0] ?? "dashboard";
+}
+
+async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api${path}`, {
+      ...options,
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+  } catch {
+    throw new Error("Cannot reach the API server. Start it with npm run dev or npm run dev:api.");
+  }
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: "Request failed" }));
+    throw new Error(error.message ?? "Request failed");
+  }
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
+}
 
 function useLocalStorage<T>(key: string, fallback: T) {
   const [value, setValue] = useState<T>(() => {
@@ -487,10 +453,17 @@ function projectedCashback(card: UserCard | undefined, category: string, amount:
 }
 
 function calculateBalances(data: AppData) {
-  const accountBalances = new Map(data.accounts.map((account) => [account.id, account.openingBalance]));
-  const cardBalances = new Map(data.cards.map((card) => [card.id, card.startingDebt]));
+  const accountBalances = new Map(
+    data.accounts.map((account) => [
+      account.id,
+      account.source === "plaid" && account.availableBalance != null ? account.availableBalance : account.currentBalance ?? account.openingBalance,
+    ])
+  );
+  const cardBalances = new Map(data.cards.map((card) => [card.id, card.currentDebt ?? card.startingDebt]));
 
   for (const txn of data.transactions) {
+    if (txn.providerTransactionId) continue;
+
     if (txn.type === "income") {
       accountBalances.set(txn.sourceId, (accountBalances.get(txn.sourceId) ?? 0) + txn.amount);
     }
@@ -610,28 +583,33 @@ function Field({
 }
 
 function AccountForm({
+  initial,
   onSubmit,
   onCancel,
 }: {
+  initial?: Account;
   onSubmit: (account: Account) => void;
   onCancel: () => void;
 }) {
-  const [bankId, setBankId] = useState(BANKS[0].id);
-  const [type, setType] = useState<AccountType>("Checking");
-  const [name, setName] = useState("Everyday Checking");
-  const [last4, setLast4] = useState("");
-  const [openingBalance, setOpeningBalance] = useState("0");
+  const [bankId, setBankId] = useState(initial?.bankId ?? BANKS[0].id);
+  const [type, setType] = useState<AccountType>(initial?.type ?? "Checking");
+  const [name, setName] = useState(initial?.name ?? "Everyday Checking");
+  const [last4, setLast4] = useState(initial?.last4 ?? "");
+  const [openingBalance, setOpeningBalance] = useState(String(initial?.currentBalance ?? initial?.openingBalance ?? 0));
 
   function submit(event: FormEvent) {
     event.preventDefault();
     const bank = getBank(bankId);
+    const balance = Number(openingBalance) || 0;
     onSubmit({
-      id: uid("acct"),
+      ...initial,
+      id: initial?.id ?? uid("acct"),
       name: name.trim() || `${bank.shortName} ${type}`,
       bankId,
       type,
       last4: last4.slice(-4),
-      openingBalance: Number(openingBalance) || 0,
+      openingBalance: balance,
+      currentBalance: balance,
       color: bank.tone,
     });
   }
@@ -678,7 +656,7 @@ function AccountForm({
           Cancel
         </button>
         <button className="primary-button" type="submit">
-          <Plus size={18} /> Add account
+          {initial ? <Check size={18} /> : <Plus size={18} />} {initial ? "Save account" : "Add account"}
         </button>
       </div>
     </form>
@@ -686,23 +664,25 @@ function AccountForm({
 }
 
 function CardForm({
+  initial,
   onSubmit,
   onCancel,
 }: {
+  initial?: UserCard;
   onSubmit: (card: UserCard) => void;
   onCancel: () => void;
 }) {
-  const [templateId, setTemplateId] = useState(CARD_CATALOG[0].id);
+  const [templateId, setTemplateId] = useState(initial?.templateId ?? CARD_CATALOG[0].id);
   const template = getTemplate(templateId);
-  const [nickname, setNickname] = useState(template.name);
-  const [issuerId, setIssuerId] = useState(template.issuer);
-  const [last4, setLast4] = useState("");
-  const [creditLimit, setCreditLimit] = useState("5000");
-  const [startingDebt, setStartingDebt] = useState("0");
-  const [apr, setApr] = useState("24.99");
-  const [minimumPayment, setMinimumPayment] = useState("35");
-  const [dueDay, setDueDay] = useState("15");
-  const [statementDay, setStatementDay] = useState("20");
+  const [nickname, setNickname] = useState(initial?.nickname ?? template.name);
+  const [issuerId, setIssuerId] = useState(initial?.issuerId ?? template.issuer);
+  const [last4, setLast4] = useState(initial?.last4 ?? "");
+  const [creditLimit, setCreditLimit] = useState(String(initial?.creditLimit ?? 5000));
+  const [startingDebt, setStartingDebt] = useState(String(initial?.currentDebt ?? initial?.startingDebt ?? 0));
+  const [apr, setApr] = useState(String(initial?.apr ?? 24.99));
+  const [minimumPayment, setMinimumPayment] = useState(String(initial?.minimumPayment ?? 35));
+  const [dueDay, setDueDay] = useState(String(initial?.dueDay ?? 15));
+  const [statementDay, setStatementDay] = useState(String(initial?.statementDay ?? 20));
 
   function changeTemplate(value: string) {
     const next = getTemplate(value);
@@ -714,21 +694,24 @@ function CardForm({
   function submit(event: FormEvent) {
     event.preventDefault();
     const selected = getTemplate(templateId);
+    const debt = Number(startingDebt) || 0;
     onSubmit({
-      id: uid("card"),
+      ...initial,
+      id: initial?.id ?? uid("card"),
       nickname: nickname.trim() || selected.name,
       templateId,
       issuerId,
       network: selected.network,
       last4: last4.slice(-4),
       creditLimit: Number(creditLimit) || 0,
-      startingDebt: Number(startingDebt) || 0,
+      startingDebt: debt,
+      currentDebt: debt,
       apr: Number(apr) || 0,
       minimumPayment: Number(minimumPayment) || 0,
       dueDay: Math.min(28, Math.max(1, Number(dueDay) || 1)),
       statementDay: Math.min(28, Math.max(1, Number(statementDay) || 1)),
       accent: selected.accent,
-      rewards: selected.rewards,
+      rewards: initial?.templateId === templateId ? initial.rewards : selected.rewards,
     });
   }
 
@@ -793,7 +776,7 @@ function CardForm({
           Cancel
         </button>
         <button className="primary-button" type="submit">
-          <CreditCard size={18} /> Add card
+          {initial ? <Check size={18} /> : <CreditCard size={18} />} {initial ? "Save card" : "Add card"}
         </button>
       </div>
     </form>
@@ -802,27 +785,35 @@ function CardForm({
 
 function TransactionForm({
   data,
+  initial,
   onSubmit,
   onCancel,
 }: {
   data: AppData;
+  initial?: Transaction;
   onSubmit: (txn: Transaction) => void;
   onCancel: () => void;
 }) {
-  const [type, setType] = useState<TransactionType>("expense");
-  const [date, setDate] = useState(todayIso);
-  const [merchant, setMerchant] = useState("");
-  const [category, setCategory] = useState("Groceries");
-  const [amount, setAmount] = useState("");
-  const [sourceKind, setSourceKind] = useState<SourceKind>("card");
-  const [sourceId, setSourceId] = useState(data.cards[0]?.id ?? data.accounts[0]?.id ?? "");
-  const [paymentAccountId, setPaymentAccountId] = useState(data.accounts[0]?.id ?? "");
-  const [notes, setNotes] = useState("");
+  const [type, setType] = useState<TransactionType>(initial?.type ?? "expense");
+  const [date, setDate] = useState(initial?.date ?? todayIso);
+  const [merchant, setMerchant] = useState(initial?.merchant ?? "");
+  const [category, setCategory] = useState(initial?.category ?? "Groceries");
+  const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
+  const [sourceKind, setSourceKind] = useState<SourceKind>(initial?.sourceKind ?? "card");
+  const [sourceId, setSourceId] = useState(initial?.sourceId ?? data.cards[0]?.id ?? data.accounts[0]?.id ?? "");
+  const [paymentAccountId, setPaymentAccountId] = useState(initial?.paymentAccountId ?? data.accounts[0]?.id ?? "");
+  const [notes, setNotes] = useState(initial?.notes ?? "");
+  const firstTypeEffect = useRef(true);
 
   const selectedCard = data.cards.find((card) => card.id === sourceId);
   const estimatedCashback = type === "expense" && sourceKind === "card" ? projectedCashback(selectedCard, category, Number(amount)) : 0;
 
   useEffect(() => {
+    if (initial && firstTypeEffect.current) {
+      firstTypeEffect.current = false;
+      return;
+    }
+    firstTypeEffect.current = false;
     if (type === "income") {
       setSourceKind("account");
       setSourceId(data.accounts[0]?.id ?? "");
@@ -841,7 +832,8 @@ function TransactionForm({
     const numericAmount = Number(amount);
     if (!numericAmount || numericAmount <= 0 || !sourceId) return;
     onSubmit({
-      id: uid("txn"),
+      ...initial,
+      id: initial?.id ?? uid("txn"),
       type,
       date,
       merchant: merchant.trim() || (type === "income" ? "Income" : "Transaction"),
@@ -947,7 +939,7 @@ function TransactionForm({
           Cancel
         </button>
         <button className="primary-button" type="submit">
-          <ListPlus size={18} /> Add transaction
+          {initial ? <Check size={18} /> : <ListPlus size={18} />} {initial ? "Save transaction" : "Add transaction"}
         </button>
       </div>
     </form>
@@ -955,19 +947,21 @@ function TransactionForm({
 }
 
 function BudgetForm({
+  initial,
   onSubmit,
   onCancel,
 }: {
+  initial?: Budget;
   onSubmit: (budget: Budget) => void;
   onCancel: () => void;
 }) {
-  const [category, setCategory] = useState("Groceries");
-  const [monthlyLimit, setMonthlyLimit] = useState("300");
+  const [category, setCategory] = useState(initial?.category ?? "Groceries");
+  const [monthlyLimit, setMonthlyLimit] = useState(String(initial?.monthlyLimit ?? 300));
 
   function submit(event: FormEvent) {
     event.preventDefault();
     onSubmit({
-      id: uid("budget"),
+      id: initial?.id ?? uid("budget"),
       category,
       monthlyLimit: Number(monthlyLimit) || 0,
     });
@@ -990,7 +984,7 @@ function BudgetForm({
           Cancel
         </button>
         <button className="primary-button" type="submit">
-          <Target size={18} /> Add budget
+          {initial ? <Check size={18} /> : <Target size={18} />} {initial ? "Save budget" : "Add budget"}
         </button>
       </div>
     </form>
@@ -1000,10 +994,12 @@ function BudgetForm({
 function AccountList({
   data,
   balances,
+  onEdit,
   onDelete,
 }: {
   data: AppData;
   balances: Map<string, number>;
+  onEdit: (account: Account) => void;
   onDelete: (id: string) => void;
 }) {
   if (!data.accounts.length) {
@@ -1022,10 +1018,13 @@ function AccountList({
             <div>
               <strong>{account.name}</strong>
               <span>
-                {bank.name} · {account.type} {account.last4 && `· ${account.last4}`}
+                {bank.name} · {account.type} {account.last4 && `· ${account.last4}`} {account.source === "plaid" && "· live available"}
               </span>
             </div>
             <b>{currency(balances.get(account.id) ?? 0)}</b>
+            <button className="ghost-icon" onClick={() => onEdit(account)} aria-label={`Edit ${account.name}`}>
+              <Pencil size={16} />
+            </button>
             <button className="ghost-icon" onClick={() => onDelete(account.id)} aria-label={`Delete ${account.name}`}>
               <Trash2 size={16} />
             </button>
@@ -1039,10 +1038,12 @@ function AccountList({
 function CardStack({
   data,
   balances,
+  onEdit,
   onDelete,
 }: {
   data: AppData;
   balances: Map<string, number>;
+  onEdit: (card: UserCard) => void;
   onDelete: (id: string) => void;
 }) {
   if (!data.cards.length) {
@@ -1053,8 +1054,9 @@ function CardStack({
     <div className="cards-grid">
       {data.cards.map((card) => {
         const debt = balances.get(card.id) ?? 0;
-        const available = Math.max(0, card.creditLimit - debt);
-        const util = card.creditLimit ? Math.min(100, (debt / card.creditLimit) * 100) : 0;
+        const available = card.source === "plaid" && card.availableCredit != null ? card.availableCredit : card.creditLimit ? Math.max(0, card.creditLimit - debt) : null;
+        const effectiveLimit = card.creditLimit || (card.source === "plaid" && card.availableCredit != null ? card.availableCredit + debt : 0);
+        const util = effectiveLimit ? Math.min(100, (debt / effectiveLimit) * 100) : 0;
         const bank = getBank(card.issuerId);
         return (
           <article className="credit-card-panel" style={{ "--accent": card.accent } as React.CSSProperties} key={card.id}>
@@ -1078,7 +1080,7 @@ function CardStack({
               </div>
               <div>
                 <span>Available</span>
-                <strong>{currency(available)}</strong>
+                <strong>{available == null ? "Unknown" : currency(available)}</strong>
               </div>
               <div>
                 <span>Minimum</span>
@@ -1087,11 +1089,12 @@ function CardStack({
             </div>
             <div className="progress-label">
               <span>Utilization</span>
-              <b>{util.toFixed(0)}%</b>
+              <b>{effectiveLimit ? `${util.toFixed(0)}%` : "N/A"}</b>
             </div>
             <div className="meter">
               <i style={{ width: `${util}%` }} />
             </div>
+            {card.source === "plaid" && available == null && <p className="card-note">Plaid did not provide this card's credit limit or available credit.</p>}
             <div className="reward-preview compact">
               {card.rewards.slice(0, 4).map((rule) => (
                 <span key={`${card.id}-${rule.category}`}>
@@ -1099,9 +1102,14 @@ function CardStack({
                 </span>
               ))}
             </div>
-            <button className="text-danger" onClick={() => onDelete(card.id)}>
-              <Trash2 size={15} /> Remove card
-            </button>
+            <div className="card-actions">
+              <button className="secondary-button" onClick={() => onEdit(card)}>
+                <Pencil size={15} /> Edit
+              </button>
+              <button className="text-danger" onClick={() => onDelete(card.id)}>
+                <Trash2 size={15} /> Remove card
+              </button>
+            </div>
           </article>
         );
       })}
@@ -1111,9 +1119,11 @@ function CardStack({
 
 function TransactionsTable({
   data,
+  onEdit,
   onDelete,
 }: {
   data: AppData;
+  onEdit: (txn: Transaction) => void;
   onDelete: (id: string) => void;
 }) {
   if (!data.transactions.length) {
@@ -1143,6 +1153,9 @@ function TransactionsTable({
               </strong>
               {txn.cashback > 0 && <span>+{currency(txn.cashback)} cash back</span>}
             </div>
+            <button className="ghost-icon" onClick={() => onEdit(txn)} aria-label="Edit transaction">
+              <Pencil size={16} />
+            </button>
             <button className="ghost-icon" onClick={() => onDelete(txn.id)} aria-label="Delete transaction">
               <Trash2 size={16} />
             </button>
@@ -1154,9 +1167,11 @@ function TransactionsTable({
 
 function BudgetPanel({
   data,
+  onEdit,
   onDelete,
 }: {
   data: AppData;
+  onEdit: (budget: Budget) => void;
   onDelete: (id: string) => void;
 }) {
   const categorySpend = spendingByCategory(data.transactions);
@@ -1185,6 +1200,9 @@ function BudgetPanel({
             <div className="meter">
               <i style={{ width: `${ratio}%` }} />
             </div>
+            <button className="ghost-icon" onClick={() => onEdit(budget)} aria-label={`Edit ${budget.category} budget`}>
+              <Pencil size={16} />
+            </button>
             <button className="ghost-icon" onClick={() => onDelete(budget.id)} aria-label={`Delete ${budget.category} budget`}>
               <Trash2 size={16} />
             </button>
@@ -1253,12 +1271,170 @@ function RewardsLibrary() {
   );
 }
 
+function AuthScreen({ onAuthed }: { onAuthed: (user: User) => void }) {
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      const result = await api<{ user: User }>(`/auth/${mode}`, {
+        method: "POST",
+        body: JSON.stringify({ email, password, name }),
+      });
+      onAuthed(result.user);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Authentication failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel animate-rise">
+        <div className="brand auth-brand">
+          <div className="brand-mark">
+            <CircleDollarSign size={24} />
+          </div>
+          <div>
+            <strong>Money Manager</strong>
+            <span>Encrypted finance workspace</span>
+          </div>
+        </div>
+        <div>
+          <p className="eyebrow">Secure access</p>
+          <h1>{mode === "signin" ? "Sign in" : "Create account"}</h1>
+          <p className="body-copy">Use a strong password. Bank tokens are encrypted server-side and never stored in the browser.</p>
+        </div>
+        <form className="form-grid auth-form" onSubmit={submit}>
+          {mode === "signup" && (
+            <Field label="Name">
+              <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" />
+            </Field>
+          )}
+          <Field label="Email">
+            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required />
+          </Field>
+          <Field label="Password" hint="Minimum 10 characters. Use a password manager.">
+            <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={mode === "signin" ? "current-password" : "new-password"} minLength={10} required />
+          </Field>
+          {error && <p className="form-error">{error}</p>}
+          <div className="form-actions">
+            <button className="secondary-button" type="button" onClick={() => setMode(mode === "signin" ? "signup" : "signin")}>
+              {mode === "signin" ? "Create account" : "Use sign in"}
+            </button>
+            <button className="primary-button" type="submit" disabled={busy}>
+              <LogIn size={18} /> {busy ? "Please wait" : mode === "signin" ? "Sign in" : "Sign up"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function PlaidConnectButton({
+  configured,
+  environment,
+  onMessage,
+  onSynced,
+}: {
+  configured: boolean;
+  environment: string;
+  onMessage: (message: string) => void;
+  onSynced: () => Promise<void>;
+}) {
+  const [linkToken, setLinkToken] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function prepareLink() {
+    if (!configured) {
+      onMessage("Plaid is not configured yet. Add PLAID_CLIENT_ID and PLAID_SECRET to .env, then restart npm run dev.");
+      return;
+    }
+    if (environment === "sandbox") {
+      onMessage("Plaid sandbox: real phone numbers are rejected. Use 415-555-0010 with OTP 123456, then choose a sandbox institution.");
+    }
+    setBusy(true);
+    try {
+      const result = await api<{ linkToken: string }>("/plaid/link-token", { method: "POST", body: "{}" });
+      setLinkToken(result.linkToken);
+    } catch (caught) {
+      onMessage(caught instanceof Error ? caught.message : "Plaid setup failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const { open, ready } = usePlaidLink({
+    token: linkToken,
+    onSuccess: async (publicToken, metadata) => {
+      await api("/plaid/exchange-public-token", {
+        method: "POST",
+        body: JSON.stringify({ publicToken, metadata }),
+      });
+      await onSynced();
+      setLinkToken(null);
+    },
+  });
+
+  useEffect(() => {
+    if (linkToken && ready) open();
+  }, [linkToken, open, ready]);
+
+  return (
+    <button className="primary-button" onClick={prepareLink} disabled={busy}>
+      <LinkIcon size={18} /> {busy ? "Connecting" : configured ? "Connect bank" : "Plaid setup needed"}
+    </button>
+  );
+}
+
 function App() {
-  const [data, setData] = useLocalStorage<AppData>(STORAGE_KEY, DEFAULT_DATA);
-  const [activeTab, setActiveTab] = useState("dashboard");
-  const [modal, setModal] = useState<"account" | "card" | "transaction" | "budget" | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [data, setData] = useState<AppData>(DEFAULT_DATA);
+  const [activeTab, setActiveTab] = useState<ViewId>(() => viewFromPath(window.location.pathname));
+  const [modal, setModal] = useState<ModalState>(null);
   const [query, setQuery] = useState("");
-  const importRef = useRef<HTMLInputElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState("");
+  const [plaidStatus, setPlaidStatus] = useState<PlaidStatus>({ configured: false, environment: "sandbox" });
+
+  async function loadData() {
+    const next = await api<AppData>("/data");
+    setData(next);
+  }
+
+  async function loadPlaidStatus() {
+    const next = await api<PlaidStatus>("/plaid/status");
+    setPlaidStatus(next);
+  }
+
+  useEffect(() => {
+    api<{ user: User }>("/auth/me")
+      .then(async (result) => {
+        setUser(result.user);
+        await Promise.all([loadData(), loadPlaidStatus()]);
+      })
+      .catch(() => {
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    function handlePopState() {
+      setActiveTab(viewFromPath(window.location.pathname));
+    }
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   const balances = useMemo(() => calculateBalances(data), [data]);
   const cash = [...balances.accountBalances.values()].reduce((sum, value) => sum + value, 0);
@@ -1279,6 +1455,14 @@ function App() {
 
   function updateData(next: Partial<AppData>) {
     setData((current) => ({ ...current, ...next }));
+  }
+
+  function navigateTo(view: ViewId) {
+    setActiveTab(view);
+    const nextPath = VIEW_PATHS[view];
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, "", nextPath);
+    }
   }
 
   function exportData() {
@@ -1304,7 +1488,78 @@ function App() {
     reader.readAsText(file);
   }
 
-  const navItems = [
+  async function createItem<T extends keyof AppData>(collection: T, endpoint: string, item: AppData[T][number]) {
+    const created = await api<AppData[T][number]>(endpoint, { method: "POST", body: JSON.stringify(item) });
+    setData((current) => {
+      const exists = current[collection].some((existing) => existing.id === created.id);
+      return {
+        ...current,
+        [collection]: exists ? current[collection].map((existing) => (existing.id === created.id ? created : existing)) : [created, ...current[collection]],
+      };
+    });
+  }
+
+  async function updateItem<T extends keyof AppData>(collection: T, endpoint: string, item: AppData[T][number]) {
+    const updated = await api<AppData[T][number]>(endpoint, { method: "PUT", body: JSON.stringify(item) });
+    setData((current) => ({
+      ...current,
+      [collection]: current[collection].map((existing) => (existing.id === updated.id ? updated : existing)),
+    }));
+  }
+
+  async function deleteItem(collection: keyof AppData, id: string) {
+    await api(`/data/${collection}/${id}`, { method: "DELETE" });
+    setData((current) => ({ ...current, [collection]: current[collection].filter((item) => item.id !== id) }));
+  }
+
+  async function syncLiveData() {
+    if (!plaidStatus.configured) {
+      setStatus("Plaid is not configured yet. Add PLAID_CLIENT_ID and PLAID_SECRET to .env, then restart npm run dev.");
+      return;
+    }
+    setStatus("Syncing live data...");
+    try {
+      await api("/plaid/sync", { method: "POST", body: "{}" });
+      await loadData();
+      setStatus("Live data synced.");
+    } catch (caught) {
+      setStatus(caught instanceof Error ? caught.message : "Sync failed.");
+    }
+  }
+
+  async function resetFinancialData() {
+    if (!confirm("Delete all accounts, cards, transactions, budgets, and linked institutions for this user?")) return;
+    await api("/data/reset", { method: "POST", body: "{}" });
+    setData(DEFAULT_DATA);
+  }
+
+  async function logout() {
+    await api("/auth/logout", { method: "POST", body: "{}" });
+    setUser(null);
+    setData(DEFAULT_DATA);
+  }
+
+  if (loading) {
+    return (
+      <div className="loading-shell">
+        <RefreshCw size={22} />
+        <span>Loading secure workspace</span>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <AuthScreen
+        onAuthed={async (nextUser) => {
+          setUser(nextUser);
+          await Promise.all([loadData(), loadPlaidStatus()]);
+        }}
+      />
+    );
+  }
+
+  const navItems: { id: ViewId; label: string; icon: ReactNode }[] = [
     { id: "dashboard", label: "Today", icon: <LayoutDashboard size={19} /> },
     { id: "accounts", label: "Accounts", icon: <Landmark size={19} /> },
     { id: "cards", label: "Cards", icon: <WalletCards size={19} /> },
@@ -1322,12 +1577,12 @@ function App() {
           </div>
           <div>
             <strong>Money Manager</strong>
-            <span>Local expense studio</span>
+            <span>MongoDB secure sync</span>
           </div>
         </div>
         <nav>
           {navItems.map((item) => (
-            <button key={item.id} className={activeTab === item.id ? "active" : ""} onClick={() => setActiveTab(item.id)}>
+            <button key={item.id} className={activeTab === item.id ? "active" : ""} onClick={() => navigateTo(item.id)}>
               {item.icon}
               {item.label}
             </button>
@@ -1335,7 +1590,7 @@ function App() {
         </nav>
         <div className="security-note">
           <ShieldCheck size={18} />
-          <span>Stored locally in this browser</span>
+          <span>Signed in as {user.email}</span>
         </div>
       </aside>
 
@@ -1353,11 +1608,18 @@ function App() {
             <button className="icon-button" aria-label="Notifications">
               <Bell size={18} />
             </button>
-            <button className="primary-button" onClick={() => setModal("transaction")}>
+            <button className="secondary-button" onClick={syncLiveData}>
+              <RefreshCw size={18} /> Sync
+            </button>
+            <button className="icon-button" onClick={logout} aria-label="Sign out">
+              <LogOut size={18} />
+            </button>
+            <button className="primary-button" onClick={() => setModal({ type: "transaction" })}>
               <Plus size={18} /> Transaction
             </button>
           </div>
         </header>
+        {status && <div className="status-strip">{status}</div>}
 
         {activeTab === "dashboard" && (
           <div className="page-grid animate-fade">
@@ -1434,7 +1696,11 @@ function App() {
                 </div>
                 <Receipt size={22} />
               </div>
-              <TransactionsTable data={{ ...data, transactions: data.transactions.slice(-5) }} onDelete={(id) => updateData({ transactions: data.transactions.filter((txn) => txn.id !== id) })} />
+              <TransactionsTable
+                data={{ ...data, transactions: data.transactions.slice(-5) }}
+                onEdit={(txn) => setModal({ type: "transaction", item: txn })}
+                onDelete={(id) => void deleteItem("transactions", id)}
+              />
             </section>
           </div>
         )}
@@ -1446,14 +1712,18 @@ function App() {
                 <p className="eyebrow">Banking</p>
                 <h2>Accounts</h2>
               </div>
-              <button className="primary-button" onClick={() => setModal("account")}>
-                <Plus size={18} /> Account
-              </button>
+              <div className="panel-actions">
+                <PlaidConnectButton configured={plaidStatus.configured} environment={plaidStatus.environment} onMessage={setStatus} onSynced={loadData} />
+                <button className="secondary-button" onClick={() => setModal({ type: "account" })}>
+                  <Plus size={18} /> Manual
+                </button>
+              </div>
             </div>
             <AccountList
               data={data}
               balances={balances.accountBalances}
-              onDelete={(id) => updateData({ accounts: data.accounts.filter((account) => account.id !== id) })}
+              onEdit={(account) => setModal({ type: "account", item: account })}
+              onDelete={(id) => void deleteItem("accounts", id)}
             />
           </section>
         )}
@@ -1465,11 +1735,19 @@ function App() {
                 <p className="eyebrow">Credit</p>
                 <h2>Credit cards and debt</h2>
               </div>
-              <button className="primary-button" onClick={() => setModal("card")}>
-                <Plus size={18} /> Card
-              </button>
+              <div className="panel-actions">
+                <PlaidConnectButton configured={plaidStatus.configured} environment={plaidStatus.environment} onMessage={setStatus} onSynced={loadData} />
+                <button className="secondary-button" onClick={() => setModal({ type: "card" })}>
+                  <Plus size={18} /> Manual
+                </button>
+              </div>
             </div>
-            <CardStack data={data} balances={balances.cardBalances} onDelete={(id) => updateData({ cards: data.cards.filter((card) => card.id !== id) })} />
+            <CardStack
+              data={data}
+              balances={balances.cardBalances}
+              onEdit={(card) => setModal({ type: "card", item: card })}
+              onDelete={(id) => void deleteItem("cards", id)}
+            />
           </section>
         )}
 
@@ -1480,11 +1758,15 @@ function App() {
                 <p className="eyebrow">Ledger</p>
                 <h2>Spending and income</h2>
               </div>
-              <button className="primary-button" onClick={() => setModal("transaction")}>
+              <button className="primary-button" onClick={() => setModal({ type: "transaction" })}>
                 <Plus size={18} /> Transaction
               </button>
             </div>
-            <TransactionsTable data={filteredData} onDelete={(id) => updateData({ transactions: data.transactions.filter((txn) => txn.id !== id) })} />
+            <TransactionsTable
+              data={filteredData}
+              onEdit={(txn) => setModal({ type: "transaction", item: txn })}
+              onDelete={(id) => void deleteItem("transactions", id)}
+            />
           </section>
         )}
 
@@ -1495,11 +1777,15 @@ function App() {
                 <p className="eyebrow">Planning</p>
                 <h2>Monthly budgets</h2>
               </div>
-              <button className="primary-button" onClick={() => setModal("budget")}>
+              <button className="primary-button" onClick={() => setModal({ type: "budget" })}>
                 <Plus size={18} /> Budget
               </button>
             </div>
-            <BudgetPanel data={data} onDelete={(id) => updateData({ budgets: data.budgets.filter((budget) => budget.id !== id) })} />
+            <BudgetPanel
+              data={data}
+              onEdit={(budget) => setModal({ type: "budget", item: budget })}
+              onDelete={(id) => void deleteItem("budgets", id)}
+            />
           </section>
         )}
 
@@ -1513,9 +1799,7 @@ function App() {
                 </div>
                 <BadgeDollarSign size={22} />
               </div>
-              <p className="body-copy">
-                Seeded from current issuer pages checked July 3, 2026. Always confirm your exact card terms, caps, activation rules, and merchant coding.
-              </p>
+              <p className="body-copy">Reward templates help estimate cashback for manual cards. Live balances and transactions come from connected institutions when Plaid is configured.</p>
               <RewardsLibrary />
             </section>
             <section className="panel">
@@ -1530,18 +1814,11 @@ function App() {
                 <button className="secondary-button" onClick={exportData}>
                   <Download size={18} /> Export JSON
                 </button>
-                <button className="secondary-button" onClick={() => importRef.current?.click()}>
-                  <Upload size={18} /> Import JSON
+                <button className="secondary-button" onClick={syncLiveData}>
+                  <RefreshCw size={18} /> Sync live data
                 </button>
-                <input
-                  ref={importRef}
-                  type="file"
-                  accept="application/json"
-                  hidden
-                  onChange={(event) => importData(event.target.files?.[0])}
-                />
-                <button className="text-danger" onClick={() => setData(DEFAULT_DATA)}>
-                  <RefreshCw size={16} /> Restore demo data
+                <button className="text-danger" onClick={resetFinancialData}>
+                  <Trash2 size={16} /> Delete all data
                 </button>
               </div>
             </section>
@@ -1551,52 +1828,72 @@ function App() {
 
       <nav className="bottom-nav">
         {navItems.slice(0, 5).map((item) => (
-          <button key={item.id} className={activeTab === item.id ? "active" : ""} onClick={() => setActiveTab(item.id)} aria-label={item.label}>
+          <button key={item.id} className={activeTab === item.id ? "active" : ""} onClick={() => navigateTo(item.id)} aria-label={item.label}>
             {item.icon}
           </button>
         ))}
       </nav>
 
-      {modal === "account" && (
-        <Modal title="Add account" onClose={() => setModal(null)}>
+      {modal?.type === "account" && (
+        <Modal title={modal.item ? "Edit account" : "Add account"} onClose={() => setModal(null)}>
           <AccountForm
+            initial={modal.item}
             onCancel={() => setModal(null)}
-            onSubmit={(account) => {
-              updateData({ accounts: [account, ...data.accounts] });
+            onSubmit={async (account) => {
+              if (modal.item) {
+                await updateItem("accounts", `/data/accounts/${account.id}`, account);
+              } else {
+                await createItem("accounts", "/data/accounts", account);
+              }
               setModal(null);
             }}
           />
         </Modal>
       )}
-      {modal === "card" && (
-        <Modal title="Add credit card" onClose={() => setModal(null)}>
+      {modal?.type === "card" && (
+        <Modal title={modal.item ? "Edit credit card" : "Add credit card"} onClose={() => setModal(null)}>
           <CardForm
+            initial={modal.item}
             onCancel={() => setModal(null)}
-            onSubmit={(card) => {
-              updateData({ cards: [card, ...data.cards] });
+            onSubmit={async (card) => {
+              if (modal.item) {
+                await updateItem("cards", `/data/cards/${card.id}`, card);
+              } else {
+                await createItem("cards", "/data/cards", card);
+              }
               setModal(null);
             }}
           />
         </Modal>
       )}
-      {modal === "transaction" && (
-        <Modal title="Add transaction" onClose={() => setModal(null)}>
+      {modal?.type === "transaction" && (
+        <Modal title={modal.item ? "Edit transaction" : "Add transaction"} onClose={() => setModal(null)}>
           <TransactionForm
             data={data}
+            initial={modal.item}
             onCancel={() => setModal(null)}
-            onSubmit={(txn) => {
-              updateData({ transactions: [txn, ...data.transactions] });
+            onSubmit={async (txn) => {
+              if (modal.item) {
+                await updateItem("transactions", `/data/transactions/${txn.id}`, txn);
+              } else {
+                await createItem("transactions", "/data/transactions", txn);
+              }
               setModal(null);
             }}
           />
         </Modal>
       )}
-      {modal === "budget" && (
-        <Modal title="Add budget" onClose={() => setModal(null)}>
+      {modal?.type === "budget" && (
+        <Modal title={modal.item ? "Edit budget" : "Add budget"} onClose={() => setModal(null)}>
           <BudgetForm
+            initial={modal.item}
             onCancel={() => setModal(null)}
-            onSubmit={(budget) => {
-              updateData({ budgets: [budget, ...data.budgets] });
+            onSubmit={async (budget) => {
+              if (modal.item) {
+                await updateItem("budgets", `/data/budgets/${budget.id}`, budget);
+              } else {
+                await createItem("budgets", "/data/budgets", budget);
+              }
               setModal(null);
             }}
           />
