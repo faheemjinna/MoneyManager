@@ -16,7 +16,8 @@ export function setSessionCookie(res, token) {
 }
 
 export function requireAuth(req, res, next) {
-  const token = req.cookies?.mm_session;
+  const bearerToken = req.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+  const token = req.cookies?.mm_session ?? bearerToken;
   if (!token) return res.status(401).json({ message: "Authentication required" });
   try {
     const payload = jwt.verify(token, env.jwtSecret);

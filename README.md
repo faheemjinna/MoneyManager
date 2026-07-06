@@ -1,6 +1,6 @@
-# Money Manager
+# Personal Assistant
 
-A MongoDB-backed React finance workspace with secure signup/signin, separated account/card/transaction/budget collections, encrypted institution tokens, and Plaid-ready live bank/card connections.
+A MongoDB-backed React personal assistant with secure signup/signin, task management, an Apple-inspired calendar, editable notes, and a full finance module. Finance data remains split into account, card, transaction, and budget collections with encrypted institution tokens and Plaid-ready live bank/card connections.
 
 ## Setup
 
@@ -33,6 +33,86 @@ npm run dev:web
 ```
 
 Open the URL Vite prints, usually `http://localhost:5173`.
+
+## iPhone and Android
+
+This React app is wrapped for native iOS and Android with Capacitor. The mobile app uses the same built React UI and talks to the same Node API.
+
+### One-time setup
+
+Install the normal web dependencies first:
+
+```bash
+npm install
+```
+
+For iPhone/iOS, install Xcode from the Mac App Store. For Android, install Android Studio and its default SDK tools.
+
+### Local phone testing
+
+Your phone or simulator cannot use `localhost` to reach the API on your Mac. Find your Mac's Wi-Fi IP:
+
+```bash
+ipconfig getifaddr en0
+```
+
+Add that API URL to `.env`:
+
+```bash
+VITE_API_BASE=http://YOUR_MAC_IP:4000
+```
+
+Example:
+
+```bash
+VITE_API_BASE=http://192.168.1.25:4000
+```
+
+Then run the API:
+
+```bash
+npm run dev:api
+```
+
+In another terminal, build and sync the native apps:
+
+```bash
+npm run mobile:sync
+```
+
+Open iOS in Xcode:
+
+```bash
+npm run mobile:ios
+```
+
+Choose an iPhone simulator or your plugged-in iPhone, then press Run in Xcode.
+
+Open Android in Android Studio:
+
+```bash
+npm run mobile:android
+```
+
+Choose an emulator or plugged-in Android phone, then press Run in Android Studio.
+
+For command-line Android builds, use Java 21. Android Studio includes one:
+
+```bash
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+cd android
+./gradlew assembleDebug
+```
+
+After any React change, run `npm run mobile:sync` again before launching the native app. For a store-ready release, host the API on HTTPS, set `VITE_API_BASE` to that HTTPS URL, and include `capacitor://localhost` in `CLIENT_ORIGIN` on the server.
+
+## Assistant modules
+
+- **Today**: a daily command center for open tasks, upcoming events, pinned notes, and finance pulse.
+- **Tasks**: track personal lists, priorities, due dates, and status.
+- **Calendar**: add events manually or paste an email/invite to import meeting details, attendees, links, and location.
+- **Notes**: create editable notes with tags and pinned favorites.
+- **Finances**: manage accounts, credit cards, spending, budgets, rewards, backups, and Plaid sync.
 
 ## Live account/card connections
 

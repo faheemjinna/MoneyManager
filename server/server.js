@@ -10,6 +10,7 @@ import { ZodError } from "zod";
 import { env } from "./config/env.js";
 import { requireAuth } from "./middleware/auth.js";
 import authRoutes from "./routes/auth.js";
+import calendarRoutes from "./routes/calendar.js";
 import dataRoutes from "./routes/data.js";
 import plaidRoutes from "./routes/plaid.js";
 
@@ -28,17 +29,19 @@ app.use(
       if (!origin) return callback(null, true);
       const allowed = new Set(env.clientOrigin.split(",").map((item) => item.trim()).filter(Boolean));
       const isLocalDev = env.nodeEnv !== "production" && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
-      return callback(null, allowed.has(origin) || isLocalDev);
+      const isNativeApp = env.nodeEnv !== "production" && ["capacitor://localhost", "ionic://localhost"].includes(origin);
+      return callback(null, allowed.has(origin) || isLocalDev || isNativeApp);
     },
     credentials: true,
   })
 );
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "6mb" }));
 app.use(cookieParser());
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.use("/api/auth", authRoutes);
+app.use("/api/calendar", calendarRoutes);
 app.use("/api/data", requireAuth, dataRoutes);
 app.use("/api/plaid", requireAuth, plaidRoutes);
 
@@ -56,5 +59,5 @@ app.use((error, _req, res, _next) => {
 
 await mongoose.connect(env.mongoUri, { autoIndex: env.nodeEnv !== "production" });
 app.listen(env.port, () => {
-  console.log(`Money Manager API listening on http://localhost:${env.port}`);
+  console.log(`Personal Assistant API listening on http://localhost:${env.port}`);
 });

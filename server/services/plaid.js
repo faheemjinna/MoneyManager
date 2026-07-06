@@ -27,5 +27,5 @@ export const plaidDefaults = {
   products: [Products.Transactions],
   country_codes: [CountryCode.Us],
   language: "en",
-  client_name: "Money Manager",
+  client_name: "Personal Assistant",
 };

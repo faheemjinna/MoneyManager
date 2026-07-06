@@ -20,4 +20,7 @@ export const env = {
   plaidClientId: process.env.PLAID_CLIENT_ID ?? "",
   plaidSecret: process.env.PLAID_SECRET ?? "",
   plaidEnv: process.env.PLAID_ENV ?? "sandbox",
+  googleClientId: process.env.GOOGLE_CLIENT_ID ?? "",
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+  googleRedirectUri: process.env.GOOGLE_REDIRECT_URI ?? `http://localhost:${Number(process.env.PORT ?? 4000)}/api/calendar/google/callback`,
 };

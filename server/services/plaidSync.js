@@ -19,7 +19,14 @@ function categoryName(transaction) {
 
 export async function syncInstitution(institution, userId) {
   const client = plaidClient();
-  const access_token = decryptString(institution.accessTokenEncrypted);
+  let access_token;
+  try {
+    access_token = decryptString(institution.accessTokenEncrypted);
+  } catch (error) {
+    institution.status = "needs_reauth";
+    await institution.save();
+    throw new Error(`Could not decrypt Plaid token for ${institution.name}. Reconnect this institution.`);
+  }
   const accountsResponse = await client.accountsGet({ access_token });
   const accountIdMap = new Map();
 
@@ -119,6 +126,12 @@ export async function syncInstitution(institution, userId) {
 export async function syncAllInstitutions(userId) {
   const institutions = await Institution.find({ userId, status: "active" });
   for (const institution of institutions) {
-    await syncInstitution(institution, userId);
+    try {
+      await syncInstitution(institution, userId);
+    } catch (error) {
+      if (!String(error?.message ?? "").startsWith("Could not decrypt Plaid token")) {
+        throw error;
+      }
+    }
   }
 }

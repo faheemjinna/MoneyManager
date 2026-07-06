@@ -10,6 +10,8 @@ import {
   Check,
   ChevronRight,
   CircleDollarSign,
+  ClipboardList,
+  Clock3,
   CreditCard,
   Download,
   Landmark,
@@ -18,6 +20,9 @@ import {
   Link as LinkIcon,
   LogIn,
   LogOut,
+  Mail,
+  NotebookPen,
+  Pin,
   ListPlus,
   Pencil,
   PieChart,
@@ -28,9 +33,14 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  SquareCheckBig,
   Target,
   Trash2,
   Upload,
+  UserCheck,
+  UserX,
+  Video,
+  Users,
   WalletCards,
   X,
 } from "lucide-react";
@@ -40,7 +50,7 @@ import { usePlaidLink } from "react-plaid-link";
 type AccountType = "Checking" | "Savings" | "Money Market" | "Cash" | "Investment";
 type TransactionType = "expense" | "income" | "card-payment";
 type SourceKind = "account" | "card";
-type ViewId = "dashboard" | "accounts" | "cards" | "transactions" | "budgets" | "rewards";
+type ViewId = "dashboard" | "tasks" | "calendar" | "notes" | "finance" | "accounts" | "cards" | "transactions" | "budgets" | "rewards" | "admin";
 
 type Bank = {
   id: string;
@@ -124,10 +134,50 @@ type Budget = {
   monthlyLimit: number;
 };
 
+type TaskItem = {
+  id: string;
+  title: string;
+  notes?: string;
+  dueDate?: string;
+  priority: "low" | "medium" | "high";
+  status: "todo" | "doing" | "done";
+  list: string;
+};
+
+type CalendarEvent = {
+  id: string;
+  title: string;
+  start: string;
+  end?: string;
+  location?: string;
+  meetingLink?: string;
+  attendees: string[];
+  sourceEmail?: string;
+  provider?: string;
+  providerEventId?: string;
+  notes?: string;
+  color: string;
+};
+
+type NoteItem = {
+  id: string;
+  title: string;
+  body: string;
+  tags: string[];
+  pinned: boolean;
+  updatedAt?: string;
+};
+
 type User = {
   id: string;
   email: string;
   name?: string;
+  role?: "admin" | "user";
+  approvalStatus?: "pending" | "approved" | "rejected";
+};
+
+type ManagedUser = User & {
+  createdAt?: string;
 };
 
 type PlaidStatus = {
@@ -135,11 +185,36 @@ type PlaidStatus = {
   environment: string;
 };
 
+type CalendarAccount = {
+  id: string;
+  provider: "google";
+  email: string;
+  name?: string;
+  status: "active" | "needs_reauth";
+  calendars: { id: string; summary: string; primary: boolean; selected: boolean; backgroundColor: string }[];
+  lastSyncedAt?: string;
+};
+
+type CalendarStatus = {
+  googleConfigured: boolean;
+  accounts: CalendarAccount[];
+};
+
+type CalendarImportResult = {
+  created: number;
+  updated: number;
+  total: number;
+  events: CalendarEvent[];
+};
+
 type AppData = {
   accounts: Account[];
   cards: UserCard[];
   transactions: Transaction[];
   budgets: Budget[];
+  tasks: TaskItem[];
+  calendarEvents: CalendarEvent[];
+  notes: NoteItem[];
 };
 
 type ModalState =
@@ -147,6 +222,9 @@ type ModalState =
   | { type: "card"; item?: UserCard }
   | { type: "transaction"; item?: Transaction }
   | { type: "budget"; item?: Budget }
+  | { type: "task"; item?: TaskItem }
+  | { type: "calendar"; item?: CalendarEvent }
+  | { type: "note"; item?: NoteItem }
   | null;
 
 const BANKS: Bank[] = [
@@ -355,18 +433,36 @@ const DEFAULT_DATA: AppData = {
   cards: [],
   transactions: [],
   budgets: [],
+  tasks: [],
+  calendarEvents: [],
+  notes: [],
 };
 
-const STORAGE_KEY = "money-manager-v1";
 const todayIso = new Date().toISOString().slice(0, 10);
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+const SESSION_TOKEN_KEY = "money-manager-session-token";
+const USE_BEARER_SESSION = window.location.protocol === "capacitor:" || API_BASE.length > 0;
 const VIEW_PATHS: Record<ViewId, string> = {
   dashboard: "/",
+  tasks: "/tasks",
+  calendar: "/calendar",
+  notes: "/notes",
+  finance: "/finance",
   accounts: "/accounts",
   cards: "/cards",
   transactions: "/transactions",
   budgets: "/budgets",
   rewards: "/rewards",
+  admin: "/admin",
+};
+const DATA_ENDPOINTS: Record<keyof AppData, string> = {
+  accounts: "accounts",
+  cards: "cards",
+  transactions: "transactions",
+  budgets: "budgets",
+  tasks: "tasks",
+  calendarEvents: "calendar-events",
+  notes: "notes",
 };
 
 function viewFromPath(pathname: string): ViewId {
@@ -374,14 +470,31 @@ function viewFromPath(pathname: string): ViewId {
   return match?.[0] ?? "dashboard";
 }
 
+function getSessionToken() {
+  if (!USE_BEARER_SESSION) return null;
+  return localStorage.getItem(SESSION_TOKEN_KEY);
+}
+
+function setSessionToken(token?: string) {
+  if (USE_BEARER_SESSION && token) {
+    localStorage.setItem(SESSION_TOKEN_KEY, token);
+  }
+}
+
+function clearSessionToken() {
+  localStorage.removeItem(SESSION_TOKEN_KEY);
+}
+
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   let response: Response;
+  const token = getSessionToken();
   try {
     response = await fetch(`${API_BASE}/api${path}`, {
       ...options,
       credentials: "include",
       headers: {
         "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...options.headers,
       },
     });
@@ -394,23 +507,6 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
-}
-
-function useLocalStorage<T>(key: string, fallback: T) {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const stored = localStorage.getItem(key);
-      return stored ? (JSON.parse(stored) as T) : fallback;
-    } catch {
-      return fallback;
-    }
-  });
-
-  useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(value));
-  }, [key, value]);
-
-  return [value, setValue] as const;
 }
 
 function uid(prefix: string) {
@@ -431,6 +527,37 @@ function percent(value: number) {
 
 function currentMonthKey() {
   return todayIso.slice(0, 7);
+}
+
+function localDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function monthKey(date: Date) {
+  return localDateKey(date).slice(0, 7);
+}
+
+function shiftMonth(date: Date, amount: number) {
+  return new Date(date.getFullYear(), date.getMonth() + amount, 1);
+}
+
+function calendarMonthCells(monthDate: Date) {
+  const firstOfMonth = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+  const firstMondayOffset = (firstOfMonth.getDay() + 6) % 7;
+  const gridStart = new Date(firstOfMonth);
+  gridStart.setDate(firstOfMonth.getDate() - firstMondayOffset);
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart);
+    date.setDate(gridStart.getDate() + index);
+    return {
+      date,
+      key: localDateKey(date),
+      inMonth: date.getMonth() === monthDate.getMonth(),
+    };
+  });
 }
 
 function getBank(id: string) {
@@ -494,6 +621,56 @@ function monthCashback(transactions: Transaction[], month = currentMonthKey()) {
   return transactions
     .filter((txn) => txn.type === "expense" && txn.date.startsWith(month))
     .reduce((sum, txn) => sum + txn.cashback, 0);
+}
+
+function formatEventTime(value: string) {
+  if (!value) return "Unscheduled";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function isToday(value?: string) {
+  return Boolean(value?.startsWith(todayIso));
+}
+
+function isUpcoming(value?: string) {
+  if (!value) return false;
+  return value >= todayIso;
+}
+
+function splitTags(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseMeetingEmail(sourceEmail: string): Partial<CalendarEvent> {
+  const lines = sourceEmail
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const emailMatches = [...sourceEmail.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((match) => match[0].toLowerCase());
+  const linkMatch = sourceEmail.match(/https?:\/\/\S+/i);
+  const dateLine = lines.find((line) => /\b(mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{1,2}[/-]\d{1,2})/i.test(line));
+  const isoDateMatch = dateLine?.match(/\d{4}-\d{2}-\d{2}/);
+  const timeMatch = dateLine?.match(/\b\d{1,2}:\d{2}\b/);
+  const locationLine = lines.find((line) => /^(location|where|room):/i.test(line));
+  const subjectLine = lines.find((line) => /^subject:/i.test(line));
+  const title =
+    subjectLine?.replace(/^subject:\s*/i, "") ||
+    lines.find((line) => !line.includes("@") && !line.startsWith("http") && line.length < 120) ||
+    "Imported meeting";
+
+  return {
+    title,
+    start: isoDateMatch ? `${isoDateMatch[0]}T${timeMatch?.[0] ?? "09:00"}` : `${todayIso}T09:00`,
+    location: locationLine?.replace(/^(location|where|room):\s*/i, "") ?? "",
+    meetingLink: linkMatch?.[0]?.replace(/[),.]+$/, "") ?? "",
+    attendees: [...new Set(emailMatches)],
+    sourceEmail,
+  };
 }
 
 function spendingByCategory(transactions: Transaction[], month = currentMonthKey()) {
@@ -991,6 +1168,223 @@ function BudgetForm({
   );
 }
 
+function TaskForm({
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  initial?: TaskItem;
+  onSubmit: (task: TaskItem) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [list, setList] = useState(initial?.list ?? "Personal");
+  const [dueDate, setDueDate] = useState(initial?.dueDate ?? todayIso);
+  const [priority, setPriority] = useState<TaskItem["priority"]>(initial?.priority ?? "medium");
+  const [status, setStatus] = useState<TaskItem["status"]>(initial?.status ?? "todo");
+  const [notes, setNotes] = useState(initial?.notes ?? "");
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim()) return;
+    onSubmit({
+      ...initial,
+      id: initial?.id ?? uid("task"),
+      title: title.trim(),
+      notes,
+      dueDate,
+      priority,
+      status,
+      list: list.trim() || "Personal",
+    });
+  }
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <Field label="Task">
+        <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Review budget, renew passport..." />
+      </Field>
+      <Field label="List">
+        <input value={list} onChange={(event) => setList(event.target.value)} placeholder="Personal" />
+      </Field>
+      <Field label="Due date">
+        <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
+      </Field>
+      <Field label="Priority">
+        <select value={priority} onChange={(event) => setPriority(event.target.value as TaskItem["priority"])}>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </Field>
+      <Field label="Status">
+        <select value={status} onChange={(event) => setStatus(event.target.value as TaskItem["status"])}>
+          <option value="todo">To do</option>
+          <option value="doing">Doing</option>
+          <option value="done">Done</option>
+        </select>
+      </Field>
+      <Field label="Notes">
+        <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Details, links, next steps..." />
+      </Field>
+      <div className="form-actions">
+        <button className="secondary-button" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary-button" type="submit">
+          {initial ? <Check size={18} /> : <SquareCheckBig size={18} />} {initial ? "Save task" : "Add task"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function CalendarEventForm({
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  initial?: CalendarEvent;
+  onSubmit: (event: CalendarEvent) => void;
+  onCancel: () => void;
+}) {
+  const [sourceEmail, setSourceEmail] = useState(initial?.sourceEmail ?? "");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [start, setStart] = useState(initial?.start ?? `${todayIso}T09:00`);
+  const [end, setEnd] = useState(initial?.end ?? `${todayIso}T10:00`);
+  const [location, setLocation] = useState(initial?.location ?? "");
+  const [meetingLink, setMeetingLink] = useState(initial?.meetingLink ?? "");
+  const [attendees, setAttendees] = useState((initial?.attendees ?? []).join(", "));
+  const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [color, setColor] = useState(initial?.color ?? "#0a84ff");
+
+  function importInvite() {
+    const parsed = parseMeetingEmail(sourceEmail);
+    setTitle(parsed.title ?? title);
+    setStart(parsed.start ?? start);
+    setLocation(parsed.location ?? location);
+    setMeetingLink(parsed.meetingLink ?? meetingLink);
+    setAttendees((parsed.attendees ?? []).join(", "));
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim() || !start) return;
+    onSubmit({
+      ...initial,
+      id: initial?.id ?? uid("event"),
+      title: title.trim(),
+      start,
+      end,
+      location,
+      meetingLink,
+      attendees: splitTags(attendees),
+      sourceEmail,
+      notes,
+      color,
+    });
+  }
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <Field label="Paste email or invite" hint="Optional. Import fills the meeting fields from readable invite text.">
+        <textarea value={sourceEmail} onChange={(event) => setSourceEmail(event.target.value)} placeholder="Subject: Product sync&#10;When: 2026-07-07 10:00..." />
+      </Field>
+      <div className="form-actions inline">
+        <button className="secondary-button" type="button" onClick={importInvite}>
+          <Mail size={18} /> Import details
+        </button>
+      </div>
+      <Field label="Title">
+        <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Team meeting" />
+      </Field>
+      <Field label="Starts">
+        <input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} />
+      </Field>
+      <Field label="Ends">
+        <input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} />
+      </Field>
+      <Field label="Location">
+        <input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Office, room, address..." />
+      </Field>
+      <Field label="Meeting link">
+        <input value={meetingLink} onChange={(event) => setMeetingLink(event.target.value)} placeholder="https://..." />
+      </Field>
+      <Field label="Attendees">
+        <input value={attendees} onChange={(event) => setAttendees(event.target.value)} placeholder="name@example.com, ..." />
+      </Field>
+      <Field label="Color">
+        <input value={color} onChange={(event) => setColor(event.target.value)} placeholder="#0a84ff" />
+      </Field>
+      <Field label="Notes">
+        <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Agenda, prep, decisions..." />
+      </Field>
+      <div className="form-actions">
+        <button className="secondary-button" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary-button" type="submit">
+          {initial ? <Check size={18} /> : <CalendarDays size={18} />} {initial ? "Save event" : "Add event"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function NoteForm({
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  initial?: NoteItem;
+  onSubmit: (note: NoteItem) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [body, setBody] = useState(initial?.body ?? "");
+  const [tags, setTags] = useState((initial?.tags ?? []).join(", "));
+  const [pinned, setPinned] = useState(initial?.pinned ?? false);
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim()) return;
+    onSubmit({
+      ...initial,
+      id: initial?.id ?? uid("note"),
+      title: title.trim(),
+      body,
+      tags: splitTags(tags),
+      pinned,
+    });
+  }
+
+  return (
+    <form className="form-grid note-form" onSubmit={submit}>
+      <Field label="Title">
+        <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Ideas, plan, travel notes..." />
+      </Field>
+      <Field label="Tags">
+        <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="work, home, ideas" />
+      </Field>
+      <label className="toggle-field">
+        <input type="checkbox" checked={pinned} onChange={(event) => setPinned(event.target.checked)} />
+        <span>Pin this note</span>
+      </label>
+      <Field label="Note">
+        <textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="Write anything you need to keep..." />
+      </Field>
+      <div className="form-actions">
+        <button className="secondary-button" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary-button" type="submit">
+          {initial ? <Check size={18} /> : <NotebookPen size={18} />} {initial ? "Save note" : "Add note"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function AccountList({
   data,
   balances,
@@ -1213,6 +1607,378 @@ function BudgetPanel({
   );
 }
 
+function TaskBoard({
+  tasks,
+  onEdit,
+  onDelete,
+  onStatus,
+}: {
+  tasks: TaskItem[];
+  onEdit: (task: TaskItem) => void;
+  onDelete: (id: string) => void;
+  onStatus: (task: TaskItem, status: TaskItem["status"]) => void;
+}) {
+  const columns: { id: TaskItem["status"]; label: string }[] = [
+    { id: "todo", label: "To do" },
+    { id: "doing", label: "Doing" },
+    { id: "done", label: "Done" },
+  ];
+
+  if (!tasks.length) {
+    return <EmptyState title="No tasks yet" body="Add errands, projects, renewals, reminders, and personal follow-ups in one place." />;
+  }
+
+  return (
+    <div className="task-board">
+      {columns.map((column) => (
+        <section className="task-column" key={column.id}>
+          <div className="task-column-head">
+            <strong>{column.label}</strong>
+            <span>{tasks.filter((task) => task.status === column.id).length}</span>
+          </div>
+          {tasks
+            .filter((task) => task.status === column.id)
+            .map((task) => (
+              <article className={`task-card priority-${task.priority}`} key={task.id}>
+                <div>
+                  <strong>{task.title}</strong>
+                  <span>
+                    {task.list} {task.dueDate && `· due ${task.dueDate}`}
+                  </span>
+                </div>
+                {task.notes && <p>{task.notes}</p>}
+                <div className="card-actions">
+                  <select value={task.status} onChange={(event) => onStatus(task, event.target.value as TaskItem["status"])} aria-label="Task status">
+                    <option value="todo">To do</option>
+                    <option value="doing">Doing</option>
+                    <option value="done">Done</option>
+                  </select>
+                  <button className="ghost-icon" onClick={() => onEdit(task)} aria-label={`Edit ${task.title}`}>
+                    <Pencil size={16} />
+                  </button>
+                  <button className="ghost-icon" onClick={() => onDelete(task.id)} aria-label={`Delete ${task.title}`}>
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </article>
+            ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function CalendarImportCard({
+  onImported,
+  onMessage,
+}: {
+  onImported: (events: CalendarEvent[]) => void;
+  onMessage: (message: string) => void;
+}) {
+  const [accountEmail, setAccountEmail] = useState("");
+  const [feedUrl, setFeedUrl] = useState("");
+  const [icsText, setIcsText] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function chooseFile(file?: File) {
+    if (!file) return;
+    setFileName(file.name);
+    setIcsText(await file.text());
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!accountEmail.trim() || (!feedUrl.trim() && !icsText.trim())) {
+      onMessage("Add the calendar email, then paste a feed URL or upload an .ics file.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await api<CalendarImportResult>("/data/calendar-events/import", {
+        method: "POST",
+        body: JSON.stringify({ accountEmail: accountEmail.trim(), feedUrl: feedUrl.trim(), icsText }),
+      });
+      onImported(result.events);
+      onMessage(`Imported ${result.created} new event${result.created === 1 ? "" : "s"} and refreshed ${result.updated}.`);
+      setFeedUrl("");
+      setIcsText("");
+      setFileName("");
+    } catch (caught) {
+      onMessage(caught instanceof Error ? caught.message : "Calendar import failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="calendar-import-card" onSubmit={submit}>
+      <div>
+        <p className="eyebrow">Import account</p>
+        <h3>Add calendars from any email</h3>
+        <span>Use a private calendar feed URL or an exported .ics file from Google, Outlook, Apple, Yahoo, work calendars, or other providers.</span>
+      </div>
+      <div className="import-fields">
+        <input type="email" value={accountEmail} onChange={(event) => setAccountEmail(event.target.value)} placeholder="email@example.com" />
+        <input value={feedUrl} onChange={(event) => setFeedUrl(event.target.value)} placeholder="https://.../calendar.ics" />
+        <label className="file-import-button">
+          <Upload size={17} />
+          <span>{fileName || "Upload .ics"}</span>
+          <input type="file" accept=".ics,text/calendar" onChange={(event) => void chooseFile(event.target.files?.[0])} />
+        </label>
+        <button className="primary-button" type="submit" disabled={busy}>
+          <Download size={18} /> {busy ? "Importing" : "Import events"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function GoogleCalendarConnect({
+  status,
+  onConnected,
+  onImported,
+  onMessage,
+}: {
+  status: CalendarStatus;
+  onConnected: () => Promise<void>;
+  onImported: (events: CalendarEvent[]) => void;
+  onMessage: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    function handleMessage(event: MessageEvent) {
+      if (event.data?.type !== "calendar-google-callback") return;
+      setBusy(false);
+      onMessage(event.data.ok ? "Google Calendar connected. Click Sync Gmail to import events." : event.data.message || "Google Calendar connection failed.");
+      void onConnected();
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [onConnected, onMessage]);
+
+  async function connectGoogle() {
+    if (!status.googleConfigured) {
+      onMessage("Google Calendar is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env, then restart npm run dev.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await api<{ url: string }>("/calendar/google/auth-url", { method: "POST", body: "{}" });
+      const popup = window.open(result.url, "google-calendar", "width=520,height=720");
+      if (!popup) {
+        onMessage("Allow popups for this site to connect Google Calendar.");
+        setBusy(false);
+        return;
+      }
+      const timer = window.setInterval(() => {
+        if (!popup.closed) return;
+        window.clearInterval(timer);
+        setBusy(false);
+        void onConnected();
+      }, 800);
+    } catch (caught) {
+      setBusy(false);
+      onMessage(caught instanceof Error ? caught.message : "Google Calendar connection failed.");
+    }
+  }
+
+  async function syncGoogle() {
+    setBusy(true);
+    try {
+      const result = await api<CalendarImportResult>("/calendar/sync", { method: "POST", body: "{}" });
+      onImported(result.events);
+      await onConnected();
+      onMessage(`Google Calendar synced ${result.total} event${result.total === 1 ? "" : "s"}.`);
+    } catch (caught) {
+      onMessage(caught instanceof Error ? caught.message : "Google Calendar sync failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="calendar-account-card">
+      <div>
+        <p className="eyebrow">Google sync</p>
+        <h3>Gmail calendars</h3>
+        <span>Connect with the Google popup, then sync events from every selected Google calendar.</span>
+      </div>
+      <div className="calendar-account-actions">
+        <button className="primary-button" onClick={connectGoogle} disabled={busy}>
+          <Mail size={18} /> {busy ? "Finish Google login" : status.accounts.some((account) => account.provider === "google") ? "Add Google account" : "Connect Gmail"}
+        </button>
+        <button className="secondary-button" onClick={syncGoogle} disabled={busy || !status.accounts.length}>
+          <RefreshCw size={18} /> {busy ? "Working" : "Sync Gmail"}
+        </button>
+      </div>
+      {status.accounts.length > 0 && (
+        <div className="calendar-account-list">
+          {status.accounts.map((account) => (
+            <article className="calendar-account-row" key={account.id}>
+              <div>
+                <strong>{account.email}</strong>
+                <span>{account.status === "needs_reauth" ? "Reconnect needed" : account.lastSyncedAt ? `Last synced ${formatEventTime(account.lastSyncedAt)}` : "Ready to sync"}</span>
+              </div>
+              <div className="calendar-source-list">
+                {account.calendars.map((calendar) => (
+                  <span key={calendar.id}>
+                    <i style={{ background: calendar.backgroundColor }} />
+                    {calendar.summary}
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CalendarPanel({
+  events,
+  onEdit,
+  onDelete,
+}: {
+  events: CalendarEvent[];
+  onEdit: (event: CalendarEvent) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [visibleMonth, setVisibleMonth] = useState(() => new Date(todayIso));
+  const visibleMonthKey = monthKey(visibleMonth);
+  const monthCells = calendarMonthCells(visibleMonth);
+  const monthEvents = events.filter((event) => event.start.startsWith(visibleMonthKey)).sort((a, b) => a.start.localeCompare(b.start));
+  const monthTitle = visibleMonth.toLocaleDateString([], { month: "long", year: "numeric" });
+
+  return (
+    <div className="calendar-layout">
+      <section className="apple-calendar">
+        <div className="calendar-nav">
+          <div>
+            <p className="eyebrow">Month view</p>
+            <h3>{monthTitle}</h3>
+          </div>
+          <div className="calendar-nav-actions">
+            <button className="secondary-button" onClick={() => setVisibleMonth((current) => shiftMonth(current, -1))} type="button">
+              Previous
+            </button>
+            <button className="secondary-button" onClick={() => setVisibleMonth(new Date(todayIso))} type="button">
+              Today
+            </button>
+            <button className="secondary-button" onClick={() => setVisibleMonth((current) => shiftMonth(current, 1))} type="button">
+              Next
+            </button>
+          </div>
+        </div>
+        <div className="calendar-weekdays">
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
+            <span key={day}>{day}</span>
+          ))}
+        </div>
+        <div className="calendar-grid">
+          {monthCells.map((cell) => {
+            const dayEvents = events.filter((event) => event.start.startsWith(cell.key)).sort((a, b) => a.start.localeCompare(b.start));
+            return (
+              <div className={`calendar-day ${cell.key === todayIso ? "today" : ""} ${cell.inMonth ? "" : "muted"}`} key={cell.key}>
+                <b>{cell.date.getDate()}</b>
+                {dayEvents.slice(0, 2).map((event) => (
+                  <button key={event.id} style={{ "--event-color": event.color } as React.CSSProperties} onClick={() => onEdit(event)}>
+                    {event.title}
+                  </button>
+                ))}
+                {dayEvents.length > 2 && <span className="more-events">+{dayEvents.length - 2} more</span>}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+      <section className="agenda-panel">
+        <div className="panel-head slim">
+          <div>
+            <p className="eyebrow">Agenda</p>
+            <h2>{monthTitle}</h2>
+          </div>
+          <Clock3 size={21} />
+        </div>
+        <div className="list-stack">
+          {monthEvents.length === 0 ? (
+            <EmptyState title="Month is clear" body="Switch months to browse past or future events." />
+          ) : (
+            monthEvents.map((event) => (
+              <article className="event-row" key={event.id}>
+                <div className="event-dot" style={{ background: event.color }} />
+                <div>
+                  <strong>{event.title}</strong>
+                  <span>{formatEventTime(event.start)}</span>
+                  {(event.location || event.meetingLink) && (
+                    <small>
+                      {event.location}
+                      {event.location && event.meetingLink ? " · " : ""}
+                      {event.meetingLink && "Video meeting"}
+                    </small>
+                  )}
+                </div>
+                <button className="ghost-icon" onClick={() => onEdit(event)} aria-label={`Edit ${event.title}`}>
+                  <Pencil size={16} />
+                </button>
+                <button className="ghost-icon" onClick={() => onDelete(event.id)} aria-label={`Delete ${event.title}`}>
+                  <Trash2 size={16} />
+                </button>
+              </article>
+            ))
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function NotesPanel({
+  notes,
+  onEdit,
+  onDelete,
+}: {
+  notes: NoteItem[];
+  onEdit: (note: NoteItem) => void;
+  onDelete: (id: string) => void;
+}) {
+  if (!notes.length) {
+    return <EmptyState title="No notes yet" body="Keep editable notes, ideas, lists, and personal reference material here." />;
+  }
+
+  return (
+    <div className="notes-grid">
+      {notes.map((note) => (
+        <article className={`note-card ${note.pinned ? "pinned" : ""}`} key={note.id}>
+          <div className="note-head">
+            <div>
+              <strong>{note.title}</strong>
+              {note.updatedAt && <span>Edited {new Date(note.updatedAt).toLocaleDateString()}</span>}
+            </div>
+            {note.pinned && <Pin size={17} />}
+          </div>
+          <p>{note.body || "Empty note"}</p>
+          <div className="reward-preview compact">
+            {note.tags.map((tag) => (
+              <span key={`${note.id}-${tag}`}>{tag}</span>
+            ))}
+          </div>
+          <div className="card-actions">
+            <button className="secondary-button" onClick={() => onEdit(note)}>
+              <Pencil size={15} /> Edit
+            </button>
+            <button className="text-danger" onClick={() => onDelete(note.id)}>
+              <Trash2 size={15} /> Remove
+            </button>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function SpendingChart({ transactions }: { transactions: Transaction[] }) {
   const categories = spendingByCategory(transactions).slice(0, 8);
   const max = Math.max(1, ...categories.map(([, value]) => value));
@@ -1277,18 +2043,27 @@ function AuthScreen({ onAuthed }: { onAuthed: (user: User) => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
+    setNotice("");
     setBusy(true);
     try {
-      const result = await api<{ user: User }>(`/auth/${mode}`, {
+      const result = await api<{ user?: User; token?: string; message?: string }>(`/auth/${mode}`, {
         method: "POST",
         body: JSON.stringify({ email, password, name }),
       });
-      onAuthed(result.user);
+      if (result.user) {
+        setSessionToken(result.token);
+        onAuthed(result.user);
+      } else {
+        setNotice(result.message ?? "Your account request was sent. You can sign in after the admin approves it.");
+        setMode("signin");
+        setPassword("");
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Authentication failed");
     } finally {
@@ -1301,17 +2076,21 @@ function AuthScreen({ onAuthed }: { onAuthed: (user: User) => void }) {
       <section className="auth-panel animate-rise">
         <div className="brand auth-brand">
           <div className="brand-mark">
-            <CircleDollarSign size={24} />
+            <Sparkles size={24} />
           </div>
           <div>
-            <strong>Money Manager</strong>
-            <span>Encrypted finance workspace</span>
+            <strong>Personal Assistant</strong>
+            <span>Encrypted life workspace</span>
           </div>
         </div>
         <div>
           <p className="eyebrow">Secure access</p>
           <h1>{mode === "signin" ? "Sign in" : "Create account"}</h1>
-          <p className="body-copy">Use a strong password. Bank tokens are encrypted server-side and never stored in the browser.</p>
+          <p className="body-copy">
+            {mode === "signin"
+              ? "Use a strong password. Bank tokens are encrypted server-side and never stored in the browser."
+              : "New accounts are held for admin approval before they can access the workspace."}
+          </p>
         </div>
         <form className="form-grid auth-form" onSubmit={submit}>
           {mode === "signup" && (
@@ -1325,9 +2104,18 @@ function AuthScreen({ onAuthed }: { onAuthed: (user: User) => void }) {
           <Field label="Password" hint="Minimum 10 characters. Use a password manager.">
             <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={mode === "signin" ? "current-password" : "new-password"} minLength={10} required />
           </Field>
+          {notice && <p className="form-notice">{notice}</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="form-actions">
-            <button className="secondary-button" type="button" onClick={() => setMode(mode === "signin" ? "signup" : "signin")}>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                setMode(mode === "signin" ? "signup" : "signin");
+                setError("");
+                setNotice("");
+              }}
+            >
               {mode === "signin" ? "Create account" : "Use sign in"}
             </button>
             <button className="primary-button" type="submit" disabled={busy}>
@@ -1337,6 +2125,75 @@ function AuthScreen({ onAuthed }: { onAuthed: (user: User) => void }) {
         </form>
       </section>
     </main>
+  );
+}
+
+function AdminPanel() {
+  const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [busyId, setBusyId] = useState("");
+  const [message, setMessage] = useState("");
+  const pendingCount = users.filter((item) => item.approvalStatus === "pending").length;
+
+  async function loadUsers() {
+    const result = await api<{ users: ManagedUser[] }>("/auth/admin/users");
+    setUsers(result.users);
+  }
+
+  useEffect(() => {
+    void loadUsers().catch((caught) => setMessage(caught instanceof Error ? caught.message : "Could not load users."));
+  }, []);
+
+  async function reviewUser(id: string, action: "approve" | "reject") {
+    setBusyId(id);
+    setMessage("");
+    try {
+      await api(`/auth/admin/users/${id}/${action}`, { method: "POST", body: "{}" });
+      await loadUsers();
+      setMessage(action === "approve" ? "User approved." : "User rejected.");
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Could not update user.");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  return (
+    <section className="panel animate-fade">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Access control</p>
+          <h2>Signup approvals</h2>
+        </div>
+        <span className="count-pill">{pendingCount} pending</span>
+      </div>
+      <p className="body-copy">New signups cannot enter the workspace until you approve them here.</p>
+      {message && <div className="status-strip compact">{message}</div>}
+      <div className="admin-list">
+        {users.length === 0 ? (
+          <EmptyState title="No signup requests" body="New account requests will appear here." />
+        ) : (
+          users.map((item) => (
+            <div className="admin-row" key={item.id}>
+              <div className="admin-avatar">{(item.name || item.email).slice(0, 1).toUpperCase()}</div>
+              <div>
+                <strong>{item.name || item.email}</strong>
+                <span>{item.email}</span>
+                {item.createdAt && <small>Requested {new Date(item.createdAt).toLocaleDateString()}</small>}
+              </div>
+              <span className={`approval-pill ${item.approvalStatus ?? "pending"}`}>{item.approvalStatus ?? "pending"}</span>
+              <div className="admin-actions">
+                <button className="secondary-button" onClick={() => void reviewUser(item.id, "approve")} disabled={busyId === item.id || item.approvalStatus === "approved"}>
+                  <UserCheck size={18} /> Approve
+                </button>
+                <button className="text-danger" onClick={() => void reviewUser(item.id, "reject")} disabled={busyId === item.id || item.approvalStatus === "rejected"}>
+                  <UserX size={16} /> Reject
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1405,6 +2262,8 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
   const [plaidStatus, setPlaidStatus] = useState<PlaidStatus>({ configured: false, environment: "sandbox" });
+  const [calendarStatus, setCalendarStatus] = useState<CalendarStatus>({ googleConfigured: false, accounts: [] });
+  const [financeOpen, setFinanceOpen] = useState(true);
 
   async function loadData() {
     const next = await api<AppData>("/data");
@@ -1416,11 +2275,16 @@ function App() {
     setPlaidStatus(next);
   }
 
+  async function loadCalendarStatus() {
+    const next = await api<CalendarStatus>("/calendar/status");
+    setCalendarStatus(next);
+  }
+
   useEffect(() => {
     api<{ user: User }>("/auth/me")
       .then(async (result) => {
         setUser(result.user);
-        await Promise.all([loadData(), loadPlaidStatus()]);
+        await Promise.all([loadData(), loadPlaidStatus(), loadCalendarStatus()]);
       })
       .catch(() => {
         setUser(null);
@@ -1442,6 +2306,11 @@ function App() {
   const netWorth = cash - debt;
   const monthlySpend = monthSpend(data.transactions);
   const monthlyCashback = monthCashback(data.transactions);
+  const openTasks = data.tasks.filter((task) => task.status !== "done");
+  const todayTasks = openTasks.filter((task) => isToday(task.dueDate));
+  const upcomingEvents = data.calendarEvents.filter((event) => isUpcoming(event.start)).slice(0, 5);
+  const pinnedNotes = data.notes.filter((note) => note.pinned).slice(0, 3);
+  const isAdmin = user?.role === "admin";
   const filteredData = useMemo(() => {
     if (!query.trim()) return data;
     const needle = query.toLowerCase();
@@ -1453,9 +2322,11 @@ function App() {
     };
   }, [data, query]);
 
-  function updateData(next: Partial<AppData>) {
-    setData((current) => ({ ...current, ...next }));
-  }
+  useEffect(() => {
+    if (user && !isAdmin && activeTab === "admin") {
+      navigateTo("dashboard");
+    }
+  }, [activeTab, isAdmin, user]);
 
   function navigateTo(view: ViewId) {
     setActiveTab(view);
@@ -1470,22 +2341,9 @@ function App() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `money-manager-${todayIso}.json`;
+    anchor.download = `personal-assistant-${todayIso}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
-  }
-
-  function importData(file: File | undefined) {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        setData(JSON.parse(String(reader.result)) as AppData);
-      } catch {
-        alert("That file does not look like a Money Manager export.");
-      }
-    };
-    reader.readAsText(file);
   }
 
   async function createItem<T extends keyof AppData>(collection: T, endpoint: string, item: AppData[T][number]) {
@@ -1508,8 +2366,18 @@ function App() {
   }
 
   async function deleteItem(collection: keyof AppData, id: string) {
-    await api(`/data/${collection}/${id}`, { method: "DELETE" });
+    await api(`/data/${DATA_ENDPOINTS[collection]}/${id}`, { method: "DELETE" });
     setData((current) => ({ ...current, [collection]: current[collection].filter((item) => item.id !== id) }));
+  }
+
+  function mergeImportedEvents(events: CalendarEvent[]) {
+    setData((current) => {
+      const importedIds = new Set(events.map((event) => event.id));
+      return {
+        ...current,
+        calendarEvents: [...events, ...current.calendarEvents.filter((event) => !importedIds.has(event.id))].sort((a, b) => a.start.localeCompare(b.start)),
+      };
+    });
   }
 
   async function syncLiveData() {
@@ -1527,16 +2395,20 @@ function App() {
     }
   }
 
-  async function resetFinancialData() {
-    if (!confirm("Delete all accounts, cards, transactions, budgets, and linked institutions for this user?")) return;
+  async function resetWorkspaceData() {
+    if (!confirm("Delete all assistant data for this user, including finances, tasks, calendar events, notes, and linked institutions?")) return;
     await api("/data/reset", { method: "POST", body: "{}" });
     setData(DEFAULT_DATA);
   }
 
   async function logout() {
-    await api("/auth/logout", { method: "POST", body: "{}" });
-    setUser(null);
-    setData(DEFAULT_DATA);
+    try {
+      await api("/auth/logout", { method: "POST", body: "{}" });
+    } finally {
+      clearSessionToken();
+      setUser(null);
+      setData(DEFAULT_DATA);
+    }
   }
 
   if (loading) {
@@ -1553,39 +2425,72 @@ function App() {
       <AuthScreen
         onAuthed={async (nextUser) => {
           setUser(nextUser);
-          await Promise.all([loadData(), loadPlaidStatus()]);
+          await Promise.all([loadData(), loadPlaidStatus(), loadCalendarStatus()]);
         }}
       />
     );
   }
 
+  const financeTabs: ViewId[] = ["finance", "accounts", "cards", "transactions", "budgets", "rewards"];
+  const financeActive = financeTabs.includes(activeTab);
+  const financeSubItems: { id: ViewId; label: string; icon: ReactNode }[] = [
+    { id: "accounts", label: "Accounts", icon: <Landmark size={18} /> },
+    { id: "cards", label: "Cards", icon: <WalletCards size={18} /> },
+    { id: "transactions", label: "Spending", icon: <Receipt size={18} /> },
+    { id: "budgets", label: "Budgets", icon: <Target size={18} /> },
+    { id: "rewards", label: "Rewards", icon: <BadgeDollarSign size={18} /> },
+  ];
   const navItems: { id: ViewId; label: string; icon: ReactNode }[] = [
     { id: "dashboard", label: "Today", icon: <LayoutDashboard size={19} /> },
-    { id: "accounts", label: "Accounts", icon: <Landmark size={19} /> },
-    { id: "cards", label: "Cards", icon: <WalletCards size={19} /> },
-    { id: "transactions", label: "Spending", icon: <Receipt size={19} /> },
-    { id: "budgets", label: "Budgets", icon: <Target size={19} /> },
-    { id: "rewards", label: "Rewards", icon: <BadgeDollarSign size={19} /> },
+    { id: "tasks", label: "Tasks", icon: <ClipboardList size={19} /> },
+    { id: "calendar", label: "Calendar", icon: <CalendarDays size={19} /> },
+    { id: "notes", label: "Notes", icon: <NotebookPen size={19} /> },
+    { id: "finance", label: "Finances", icon: <CircleDollarSign size={19} /> },
+    ...(isAdmin ? [{ id: "admin" as ViewId, label: "Admin", icon: <Users size={19} /> }] : []),
   ];
+  const allNavItems = [...navItems, ...financeSubItems];
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
-            <CircleDollarSign size={24} />
+            <Sparkles size={24} />
           </div>
           <div>
-            <strong>Money Manager</strong>
-            <span>MongoDB secure sync</span>
+            <strong>Personal Assistant</strong>
+            <span>All-in-one secure sync</span>
           </div>
         </div>
         <nav>
           {navItems.map((item) => (
-            <button key={item.id} className={activeTab === item.id ? "active" : ""} onClick={() => navigateTo(item.id)}>
-              {item.icon}
-              {item.label}
-            </button>
+            <div className="nav-group" key={item.id}>
+              <button
+                className={`${activeTab === item.id || (item.id === "finance" && financeActive) ? "active" : ""} ${item.id === "finance" ? "has-children" : ""}`}
+                onClick={() => {
+                  if (item.id === "finance") {
+                    setFinanceOpen((current) => !current);
+                    navigateTo("finance");
+                    return;
+                  }
+                  navigateTo(item.id);
+                }}
+              >
+                {item.icon}
+                {item.label}
+                {item.id === "finance" && <ChevronRight className={financeOpen || financeActive ? "chevron open" : "chevron"} size={17} />}
+              </button>
+              {item.id === "finance" && (financeOpen || financeActive) && (
+                <div className="subnav">
+                  {financeSubItems.map((subItem) => (
+                    <button key={subItem.id} className={activeTab === subItem.id ? "active" : ""} onClick={() => navigateTo(subItem.id)}>
+                      {subItem.icon}
+                      {subItem.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
         </nav>
         <div className="security-note">
@@ -1597,13 +2502,13 @@ function App() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Personal finance</p>
-            <h1>{activeTab === "dashboard" ? "Today" : navItems.find((item) => item.id === activeTab)?.label}</h1>
+            <p className="eyebrow">{financeActive ? "Finance module" : "Personal assistant"}</p>
+            <h1>{activeTab === "dashboard" ? "Today" : allNavItems.find((item) => item.id === activeTab)?.label ?? "Today"}</h1>
           </div>
           <div className="top-actions">
             <div className="searchbox">
               <Search size={17} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search spending" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search finance" />
             </div>
             <button className="icon-button" aria-label="Notifications">
               <Bell size={18} />
@@ -1614,8 +2519,21 @@ function App() {
             <button className="icon-button" onClick={logout} aria-label="Sign out">
               <LogOut size={18} />
             </button>
-            <button className="primary-button" onClick={() => setModal({ type: "transaction" })}>
-              <Plus size={18} /> Transaction
+            <button
+              className="primary-button"
+              onClick={() =>
+                setModal(
+                  activeTab === "calendar"
+                    ? { type: "calendar" }
+                    : activeTab === "notes"
+                      ? { type: "note" }
+                      : financeActive
+                        ? { type: "transaction" }
+                        : { type: "task" }
+                )
+              }
+            >
+              <Plus size={18} /> {activeTab === "calendar" ? "Event" : activeTab === "notes" ? "Note" : financeActive ? "Transaction" : "Task"}
             </button>
           </div>
         </header>
@@ -1625,32 +2543,191 @@ function App() {
           <div className="page-grid animate-fade">
             <section className="hero-panel">
               <div>
-                <p className="eyebrow">Net worth</p>
-                <h2>{currency(netWorth)}</h2>
+                <p className="eyebrow">Your day</p>
+                <h2>{openTasks.length} open tasks</h2>
                 <span>
-                  {currency(cash)} cash and assets · {currency(debt)} credit card debt
+                  {upcomingEvents.length} upcoming events · {pinnedNotes.length} pinned notes · {currency(netWorth)} net worth
                 </span>
               </div>
               <div className="hero-orbit">
                 <div className="hero-phone">
                   <div className="phone-pill" />
-                  <strong>{currency(monthlySpend)}</strong>
-                  <span>spent in {currentMonthKey()}</span>
-                  <div className="mini-wave">
-                    <i />
-                    <i />
-                    <i />
-                    <i />
+                  <strong>{todayTasks.length || upcomingEvents.length}</strong>
+                  <span>{todayTasks.length ? "tasks due today" : "meetings ahead"}</span>
+                  <div className="assistant-stack">
+                    <span><SquareCheckBig size={16} /> Tasks</span>
+                    <span><CalendarDays size={16} /> Calendar</span>
+                    <span><NotebookPen size={16} /> Notes</span>
                   </div>
                 </div>
               </div>
             </section>
 
             <div className="stats-grid">
-              <StatTile label="Monthly spend" value={currency(monthlySpend)} detail="Current month expenses" icon={<Receipt size={20} />} tone="orange" />
+              <StatTile label="Tasks" value={String(openTasks.length)} detail={`${todayTasks.length} due today`} icon={<SquareCheckBig size={20} />} tone="blue" />
+              <StatTile label="Calendar" value={String(upcomingEvents.length)} detail="Upcoming schedule" icon={<CalendarDays size={20} />} tone="green" />
+              <StatTile label="Notes" value={String(data.notes.length)} detail={`${pinnedNotes.length} pinned`} icon={<NotebookPen size={20} />} tone="pink" />
+              <StatTile label="Net worth" value={currency(netWorth)} detail={`${currency(monthlySpend)} spent this month`} icon={<CircleDollarSign size={20} />} tone="orange" />
+            </div>
+
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <p className="eyebrow">Focus</p>
+                  <h2>Tasks due soon</h2>
+                </div>
+                <ClipboardList size={22} />
+              </div>
+              <div className="list-stack">
+                {openTasks.slice(0, 5).length ? (
+                  openTasks.slice(0, 5).map((task) => (
+                    <div className="due-row" key={task.id}>
+                      <div>
+                        <strong>{task.title}</strong>
+                        <span>{task.list} · {task.dueDate || "No due date"}</span>
+                      </div>
+                      <button className="ghost-icon" onClick={() => setModal({ type: "task", item: task })} aria-label={`Edit ${task.title}`}>
+                        <Pencil size={16} />
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <EmptyState title="Nothing pressing" body="Your open task list is clear." />
+                )}
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <p className="eyebrow">Schedule</p>
+                  <h2>Upcoming events</h2>
+                </div>
+                <CalendarDays size={22} />
+              </div>
+              <div className="list-stack">
+                {upcomingEvents.length ? (
+                  upcomingEvents.map((event) => (
+                    <div className="due-row" key={event.id}>
+                      <div>
+                        <strong>{event.title}</strong>
+                        <span>{formatEventTime(event.start)}</span>
+                      </div>
+                      {event.meetingLink && <Video size={18} />}
+                    </div>
+                  ))
+                ) : (
+                  <EmptyState title="No upcoming events" body="Import meetings or add personal appointments from Calendar." />
+                )}
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <p className="eyebrow">Finance pulse</p>
+                  <h2>Spending by category</h2>
+                </div>
+                <LineChart size={22} />
+              </div>
+              <SpendingChart transactions={data.transactions} />
+            </section>
+
+            <section className="panel wide">
+              <div className="panel-head">
+                <div>
+                  <p className="eyebrow">Pinned</p>
+                  <h2>Notes</h2>
+                </div>
+                <NotebookPen size={22} />
+              </div>
+              <NotesPanel notes={pinnedNotes.length ? pinnedNotes : data.notes.slice(0, 3)} onEdit={(note) => setModal({ type: "note", item: note })} onDelete={(id) => void deleteItem("notes", id)} />
+            </section>
+          </div>
+        )}
+
+        {activeTab === "tasks" && (
+          <section className="panel animate-fade">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">Task management</p>
+                <h2>Tasks and follow-ups</h2>
+              </div>
+              <button className="primary-button" onClick={() => setModal({ type: "task" })}>
+                <Plus size={18} /> Task
+              </button>
+            </div>
+            <TaskBoard
+              tasks={data.tasks}
+              onEdit={(task) => setModal({ type: "task", item: task })}
+              onDelete={(id) => void deleteItem("tasks", id)}
+              onStatus={(task, status) => void updateItem("tasks", `/data/tasks/${task.id}`, { ...task, status })}
+            />
+          </section>
+        )}
+
+        {activeTab === "calendar" && (
+          <section className="panel animate-fade">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">Calendar</p>
+                <h2>Meetings and appointments</h2>
+              </div>
+              <button className="primary-button" onClick={() => setModal({ type: "calendar" })}>
+                <Plus size={18} /> Event
+              </button>
+            </div>
+            <GoogleCalendarConnect status={calendarStatus} onConnected={async () => { await Promise.all([loadCalendarStatus(), loadData()]); }} onImported={mergeImportedEvents} onMessage={setStatus} />
+            <CalendarImportCard onImported={mergeImportedEvents} onMessage={setStatus} />
+            <CalendarPanel events={data.calendarEvents} onEdit={(event) => setModal({ type: "calendar", item: event })} onDelete={(id) => void deleteItem("calendarEvents", id)} />
+          </section>
+        )}
+
+        {activeTab === "notes" && (
+          <section className="panel animate-fade">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">Notes</p>
+                <h2>Editable personal notes</h2>
+              </div>
+              <button className="primary-button" onClick={() => setModal({ type: "note" })}>
+                <Plus size={18} /> Note
+              </button>
+            </div>
+            <NotesPanel notes={data.notes} onEdit={(note) => setModal({ type: "note", item: note })} onDelete={(id) => void deleteItem("notes", id)} />
+          </section>
+        )}
+
+        {activeTab === "finance" && (
+          <div className="page-grid animate-fade">
+            <section className="hero-panel finance-hero">
+              <div>
+                <p className="eyebrow">Finance dashboard</p>
+                <h2>{currency(netWorth)}</h2>
+                <span>
+                  {currency(cash)} cash and assets · {currency(debt)} credit card debt · {currency(monthlyCashback)} cashback
+                </span>
+              </div>
+              <div className="finance-links">
+                {[
+                  ["Accounts", "accounts", <Landmark size={19} />],
+                  ["Cards", "cards", <WalletCards size={19} />],
+                  ["Spending", "transactions", <Receipt size={19} />],
+                  ["Budgets", "budgets", <Target size={19} />],
+                  ["Rewards", "rewards", <BadgeDollarSign size={19} />],
+                ].map(([label, id, icon]) => (
+                  <button key={String(id)} className="secondary-button" onClick={() => navigateTo(id as ViewId)}>
+                    {icon} {label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <div className="stats-grid">
+              <StatTile label="Cash and assets" value={currency(cash)} detail={`${data.accounts.length} accounts tracked`} icon={<Landmark size={20} />} tone="blue" />
+              <StatTile label="Credit debt" value={currency(debt)} detail={`${data.cards.length} cards tracked`} icon={<WalletCards size={20} />} tone="orange" />
+              <StatTile label="Monthly spend" value={currency(monthlySpend)} detail="Current month expenses" icon={<Receipt size={20} />} tone="pink" />
               <StatTile label="Cashback" value={currency(monthlyCashback)} detail="Estimated from card rules" icon={<BadgeDollarSign size={20} />} tone="green" />
-              <StatTile label="Accounts" value={String(data.accounts.length)} detail={`${data.cards.length} credit cards linked`} icon={<Landmark size={20} />} tone="blue" />
-              <StatTile label="Transactions" value={String(data.transactions.length)} detail="Income, expenses, payments" icon={<Activity size={20} />} tone="pink" />
             </div>
 
             <section className="panel wide">
@@ -1673,18 +2750,22 @@ function App() {
                 <CalendarDays size={22} />
               </div>
               <div className="list-stack">
-                {data.cards.map((card) => {
-                  const debtValue = balances.cardBalances.get(card.id) ?? 0;
-                  return (
-                    <div className="due-row" key={card.id}>
-                      <div>
-                        <strong>{card.nickname}</strong>
-                        <span>Due day {card.dueDay} · minimum {currency(card.minimumPayment)}</span>
+                {data.cards.length ? (
+                  data.cards.map((card) => {
+                    const debtValue = balances.cardBalances.get(card.id) ?? 0;
+                    return (
+                      <div className="due-row" key={card.id}>
+                        <div>
+                          <strong>{card.nickname}</strong>
+                          <span>Due day {card.dueDay} · minimum {currency(card.minimumPayment)}</span>
+                        </div>
+                        <b>{currency(debtValue)}</b>
                       </div>
-                      <b>{currency(debtValue)}</b>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                ) : (
+                  <EmptyState title="No cards yet" body="Add credit cards to track payments, debt, and rewards." />
+                )}
               </div>
             </section>
 
@@ -1697,7 +2778,7 @@ function App() {
                 <Receipt size={22} />
               </div>
               <TransactionsTable
-                data={{ ...data, transactions: data.transactions.slice(-5) }}
+                data={{ ...data, transactions: data.transactions.slice(0, 5) }}
                 onEdit={(txn) => setModal({ type: "transaction", item: txn })}
                 onDelete={(id) => void deleteItem("transactions", id)}
               />
@@ -1817,13 +2898,15 @@ function App() {
                 <button className="secondary-button" onClick={syncLiveData}>
                   <RefreshCw size={18} /> Sync live data
                 </button>
-                <button className="text-danger" onClick={resetFinancialData}>
+                <button className="text-danger" onClick={resetWorkspaceData}>
                   <Trash2 size={16} /> Delete all data
                 </button>
               </div>
             </section>
           </div>
         )}
+
+        {activeTab === "admin" && isAdmin && <AdminPanel />}
       </main>
 
       <nav className="bottom-nav">
@@ -1893,6 +2976,54 @@ function App() {
                 await updateItem("budgets", `/data/budgets/${budget.id}`, budget);
               } else {
                 await createItem("budgets", "/data/budgets", budget);
+              }
+              setModal(null);
+            }}
+          />
+        </Modal>
+      )}
+      {modal?.type === "task" && (
+        <Modal title={modal.item ? "Edit task" : "Add task"} onClose={() => setModal(null)}>
+          <TaskForm
+            initial={modal.item}
+            onCancel={() => setModal(null)}
+            onSubmit={async (task) => {
+              if (modal.item) {
+                await updateItem("tasks", `/data/tasks/${task.id}`, task);
+              } else {
+                await createItem("tasks", "/data/tasks", task);
+              }
+              setModal(null);
+            }}
+          />
+        </Modal>
+      )}
+      {modal?.type === "calendar" && (
+        <Modal title={modal.item ? "Edit event" : "Add event"} onClose={() => setModal(null)}>
+          <CalendarEventForm
+            initial={modal.item}
+            onCancel={() => setModal(null)}
+            onSubmit={async (event) => {
+              if (modal.item) {
+                await updateItem("calendarEvents", `/data/calendar-events/${event.id}`, event);
+              } else {
+                await createItem("calendarEvents", "/data/calendar-events", event);
+              }
+              setModal(null);
+            }}
+          />
+        </Modal>
+      )}
+      {modal?.type === "note" && (
+        <Modal title={modal.item ? "Edit note" : "Add note"} onClose={() => setModal(null)}>
+          <NoteForm
+            initial={modal.item}
+            onCancel={() => setModal(null)}
+            onSubmit={async (note) => {
+              if (modal.item) {
+                await updateItem("notes", `/data/notes/${note.id}`, note);
+              } else {
+                await createItem("notes", "/data/notes", note);
               }
               setModal(null);
             }}
